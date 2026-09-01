@@ -7,6 +7,7 @@ from app.models.job_run import JobRun
 from app.models.region import Region
 from app.models.source import Source
 from app.models.source_collection_job import SourceCollectionJob
+from app.models.system_setting import SystemSetting
 from app.models.user import User
 
 __all__ = [
@@ -19,5 +20,6 @@ __all__ = [
     "Region",
     "Source",
     "SourceCollectionJob",
+    "SystemSetting",
     "User",
 ]

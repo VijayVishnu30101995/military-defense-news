@@ -1,5 +1,6 @@
 from app.models.article import Article
 from app.models.article_category import ArticleCategory
+from app.models.article_relation import ArticleRelation
 from app.models.category import Category
 from app.models.country import Country
 from app.models.region import Region
@@ -9,6 +10,7 @@ from app.models.user import User
 __all__ = [
     "Article",
     "ArticleCategory",
+    "ArticleRelation",
     "Category",
     "Country",
     "Region",

@@ -27,3 +27,6 @@ uvicorn==0.52.4
 uvloop==0.22.1
 watchfiles==1.2.0
 websockets==16.1.1
+email-validator==2.3.0
+PyJWT==2.13.0
+pwdlib==0.3.1

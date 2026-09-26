@@ -1,5 +1,3 @@
-from datetime import datetime, timedelta
-
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -13,9 +11,9 @@ from app.schemas.source_collection_job import (
     SourceCollectionJobResponse,
     SourceCollectionJobUpdate,
 )
+from app.schemas.collection import CollectionRunResponse
 from app.services.article import ArticleService
 from app.services.collector import SourceCollectorService
-from app.services.scheduler import run_due_collection_jobs
 from app.services.source import SourceService
 from app.services.source_collection_job import SourceCollectionJobService
 
@@ -195,12 +193,13 @@ def get_source(
 
 @router.post(
     "/{source_id}/collect",
+    response_model=CollectionRunResponse,
     status_code=status.HTTP_200_OK,
 )
-def collect_source(
+def collect_source_endpoint(
     source_id: int,
     db: Session = Depends(get_db),
-) -> dict:
+) -> CollectionRunResponse:
     source = db.query(Source).filter(Source.id == source_id).first()
     if source is None:
         raise HTTPException(
@@ -208,27 +207,18 @@ def collect_source(
             detail="Source not found",
         )
 
-    job = db.query(SourceCollectionJob).filter(SourceCollectionJob.source_id == source_id).first()
-    if job is None:
-        job = SourceCollectionJob(
-            source_id=source_id,
-            is_enabled=True,
-            interval_minutes=source.collection_frequency,
-            next_run_at=datetime.utcnow() + timedelta(minutes=5),
-        )
-        db.add(job)
-        db.commit()
-        db.refresh(job)
-
-    source.last_success_at = datetime.utcnow()
-    db.commit()
-
-    return {
-        "source_id": source.id,
-        "name": source.name,
-        "status": "ok",
-        "last_success_at": source.last_success_at.isoformat(),
-    }
+    try:
+        return SourceCollectorService(db).collect_source(source_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
 
 
 @router.delete(

@@ -1,4 +1,6 @@
-from fastapi import FastAPI
+from contextlib import asynccontextmanager
+
+from fastapi import Depends, FastAPI, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
@@ -6,6 +8,7 @@ from app.api.v1.articles import router as articles_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.health import router as health_router
 from app.api.v1.sources import router as sources_router
+from app.api.dependencies import get_current_user
 from app.core.reference_data import ensure_reference_data
 from app.database import SessionLocal, engine
 from app.models.user import User

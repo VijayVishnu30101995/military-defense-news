@@ -14,7 +14,7 @@
           <h1>Defense Brief</h1>
         </div>
         <div class="header-actions">
-          <div class="view-switcher" aria-label="Main views">
+          <div id="viewSwitcher" class="view-switcher hidden" aria-label="Main views">
             <button type="button" class="nav-tab active" data-view="dashboard">Dashboard</button>
             <button type="button" class="nav-tab" data-view="sources">Sources</button>
           </div>
@@ -26,25 +26,33 @@
 
       <main>
         <section id="authCard" class="card auth-card">
-          <div class="auth-header">
-            <div class="auth-mark">DB</div>
-            <div>
-              <p class="eyebrow">Secure access</p>
-              <h2>Operator sign in</h2>
+          <div class="auth-visual" role="img" aria-label="Military aircraft flying over a coastal landscape">
+            <div class="auth-visual-caption">
+              <p class="eyebrow">Defense intelligence</p>
+              <h2>Clarity in a changing world.</h2>
             </div>
           </div>
-          <form id="loginForm">
-            <label>
-              Email
-              <input id="emailInput" type="email" value="admin@defensebrief.com" required />
-            </label>
-            <label>
-              Password
-              <input id="passwordInput" type="password" value="Defence123!" required />
-            </label>
-            <button type="submit">Access dashboard</button>
-          </form>
-          <p class="hint">Use the seeded operator account for the demo.</p>
+          <div class="auth-content">
+            <div class="auth-header">
+              <div class="auth-mark">DB</div>
+              <div>
+                <p class="eyebrow">Secure access</p>
+                <h2>Operator sign in</h2>
+              </div>
+            </div>
+            <form id="loginForm">
+              <label>
+                Email
+                <input id="emailInput" type="email" value="admin@defensebrief.com" required />
+              </label>
+              <label>
+                Password
+                <input id="passwordInput" type="password" value="Defence123!" required />
+              </label>
+              <button type="submit">Access dashboard</button>
+            </form>
+            <p class="hint">Use the seeded operator account for the demo.</p>
+          </div>
         </section>
 
         <section id="dashboard" class="hidden dashboard">

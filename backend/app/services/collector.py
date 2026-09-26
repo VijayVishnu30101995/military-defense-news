@@ -9,6 +9,7 @@ from xml.etree import ElementTree
 
 from sqlalchemy.orm import Session
 
+from app.core.content_filters import is_sports_story
 from app.models.article import Article
 from app.models.job_run import JobRun
 from app.models.source import Source
@@ -352,6 +353,9 @@ class SourceCollectorService:
         for item in items:
             link = item["link"]
             title = item["title"]
+            if is_sports_story(title, item.get("summary")):
+                continue
+
             normalized_url = ArticleRepository.normalize_url(link)
             image_url = item.get("image_url") or self._resolve_article_image(link, fallback_base_url=source.website_url)
             duplicate = self.article_repository.find_duplicate(

@@ -3,10 +3,10 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user
+from app.core.content_filters import is_sports_story
 from app.database import get_db
 from app.models.article import Article
 from app.models.article_category import ArticleCategory
@@ -62,28 +62,34 @@ def _serialize_article(db: Session, article: Article) -> dict:
 
 @router.get("/dashboard")
 def get_dashboard(db: Session = Depends(get_db)) -> dict:
-    total_news = db.query(Article.id).count()
-    important_news = (
-        db.query(Article.id)
-        .filter(Article.importance_score.is_not(None))
-        .filter(Article.importance_score >= 80)
-        .count()
+    articles = (
+        db.query(Article)
+        .order_by(Article.published_at.desc().nullslast(), Article.collected_at.desc())
+        .all()
+    )
+    articles = [
+        article
+        for article in articles
+        if not is_sports_story(article.title, article.summary or article.description)
+    ]
+    total_news = len(articles)
+    important_news = sum(
+        article.importance_score is not None and article.importance_score >= 80
+        for article in articles
     )
     category_count = db.query(Category.id).count()
     source_count = db.query(Source.id).count()
 
-    top_developments = (
-        db.query(Article)
-        .order_by(Article.importance_score.desc().nullslast(), Article.published_at.desc().nullslast(), Article.collected_at.desc())
-        .limit(4)
-        .all()
-    )
-    latest_news = (
-        db.query(Article)
-        .order_by(Article.published_at.desc().nullslast(), Article.collected_at.desc())
-        .limit(6)
-        .all()
-    )
+    top_developments = sorted(
+        articles,
+        key=lambda article: (
+            article.importance_score is not None,
+            article.importance_score or 0,
+            article.published_at or article.collected_at,
+        ),
+        reverse=True,
+    )[:4]
+    latest_news = articles[:6]
 
     latest_newsletter = db.query(Newsletter).order_by(Newsletter.newsletter_date.desc()).first()
     newsletter_payload = {"available": False}
@@ -153,13 +159,17 @@ def list_categories(db: Session = Depends(get_db)) -> list[dict]:
 @router.get("/articles")
 def list_articles(db: Session = Depends(get_db)) -> list[dict]:
     items = db.query(Article).order_by(Article.published_at.desc().nullslast(), Article.collected_at.desc()).all()
-    return [_serialize_article(db, item) for item in items]
+    return [
+        _serialize_article(db, item)
+        for item in items
+        if not is_sports_story(item.title, item.summary or item.description)
+    ]
 
 
 @router.get("/articles/{article_id}")
 def get_article(article_id: int, db: Session = Depends(get_db)) -> dict:
     article = db.query(Article).filter(Article.id == article_id).first()
-    if article is None:
+    if article is None or is_sports_story(article.title, article.summary or article.description):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Article not found")
     return _serialize_article(db, article)
 
@@ -177,6 +187,11 @@ def get_newsletter(newsletter_id: int, db: Session = Depends(get_db)) -> dict:
         .order_by(NewsletterArticle.position.asc())
         .all()
     )
+    article_rows = [
+        article
+        for article in article_rows
+        if not is_sports_story(article.title, article.summary or article.description)
+    ]
 
     return {
         "id": newsletter.id,
@@ -198,9 +213,13 @@ def generate_newsletter(db: Session = Depends(get_db)) -> dict:
         article_candidates = (
             db.query(Article)
             .order_by(Article.published_at.desc().nullslast(), Article.collected_at.desc())
-            .limit(5)
             .all()
         )
+        article_candidates = [
+            article
+            for article in article_candidates
+            if not is_sports_story(article.title, article.summary or article.description)
+        ][:5]
 
         newsletter = Newsletter(
             newsletter_date=newsletter_date,
@@ -241,6 +260,11 @@ def download_newsletter_pdf(newsletter_id: int, db: Session = Depends(get_db)) -
         .limit(10)
         .all()
     )
+    article_rows = [
+        article
+        for article in article_rows
+        if not is_sports_story(article.title, article.summary or article.description)
+    ]
 
     lines = [
         "BT /F1 20 Tf 72 760 Td (Defense Brief) Tj ET",

@@ -8,6 +8,7 @@ const loginForm = document.getElementById('loginForm');
 const emailInput = document.getElementById('emailInput');
 const passwordInput = document.getElementById('passwordInput');
 const logoutBtn = document.getElementById('logoutBtn');
+const viewSwitcher = document.getElementById('viewSwitcher');
 const themeToggleBtn = document.getElementById('themeToggleBtn');
 const navTabs = document.querySelectorAll('.nav-tab');
 const statsGrid = document.getElementById('statsGrid');
@@ -125,6 +126,9 @@ async function api(path, options = {}) {
 
   if (!response.ok) {
     const errorText = await response.text();
+    if (response.status === 401 && token && getToken() === token) {
+      logout();
+    }
     throw new Error(errorText || 'Request failed');
   }
 
@@ -680,6 +684,7 @@ async function login(event) {
     setToken(result.access_token);
     authCard.classList.add('hidden');
     dashboardEl.classList.remove('hidden');
+    showView('dashboard');
     logoutBtn.classList.remove('hidden');
     await Promise.all([loadDashboard(), loadReferenceData(), loadArticles()]);
   } catch (error) {
@@ -800,6 +805,7 @@ async function deleteSource(sourceId) {
 
 function showView(viewName) {
   const isDashboard = viewName === 'dashboard';
+  viewSwitcher.classList.toggle('hidden', !getToken());
   dashboardView.classList.toggle('hidden', !isDashboard);
   sourceView.classList.toggle('hidden', isDashboard);
 

@@ -8,7 +8,16 @@ from app.database import get_db
 from app.models.source import Source
 from app.models.source_collection_job import SourceCollectionJob
 from app.schemas.source import SourceCreate, SourceResponse, SourceUpdate
+from app.schemas.source_collection_job import (
+    SourceCollectionJobCreate,
+    SourceCollectionJobResponse,
+    SourceCollectionJobUpdate,
+)
+from app.services.article import ArticleService
+from app.services.collector import SourceCollectorService
+from app.services.scheduler import run_due_collection_jobs
 from app.services.source import SourceService
+from app.services.source_collection_job import SourceCollectionJobService
 
 
 router = APIRouter(
@@ -24,6 +33,101 @@ def list_sources(
 ) -> list[SourceResponse]:
     service = SourceService(db)
     return service.get_all()
+
+
+@router.get("/{source_id}/job", response_model=SourceCollectionJobResponse)
+def get_source_collection_job(
+    source_id: int,
+    db: Session = Depends(get_db),
+) -> SourceCollectionJobResponse:
+    source_service = SourceService(db)
+    if source_service.get_by_id(source_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Source not found",
+        )
+
+    service = SourceCollectionJobService(db)
+    job = service.get_by_source_id(source_id)
+    if job is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Source collection job not found",
+        )
+    return job
+
+
+@router.post(
+    "/{source_id}/job",
+    response_model=SourceCollectionJobResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_source_collection_job(
+    source_id: int,
+    job_data: SourceCollectionJobCreate,
+    db: Session = Depends(get_db),
+) -> SourceCollectionJobResponse:
+    source_service = SourceService(db)
+    if source_service.get_by_id(source_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Source not found",
+        )
+
+    service = SourceCollectionJobService(db)
+    return service.create(source_id, job_data)
+
+
+@router.patch(
+    "/{source_id}/job",
+    response_model=SourceCollectionJobResponse,
+)
+def update_source_collection_job(
+    source_id: int,
+    job_data: SourceCollectionJobUpdate,
+    db: Session = Depends(get_db),
+) -> SourceCollectionJobResponse:
+    source_service = SourceService(db)
+    if source_service.get_by_id(source_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Source not found",
+        )
+
+    service = SourceCollectionJobService(db)
+    job = service.update(source_id, job_data)
+    if job is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Source collection job not found",
+        )
+    return job
+
+
+@router.delete(
+    "/{source_id}/job",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_source_collection_job(
+    source_id: int,
+    db: Session = Depends(get_db),
+) -> None:
+    source_service = SourceService(db)
+    if source_service.get_by_id(source_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Source not found",
+        )
+
+    service = SourceCollectionJobService(db)
+    deleted = service.delete(source_id)
+
+    if not deleted:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Source collection job not found",
+        )
+
 
 @router.patch(
     "/{source_id}",

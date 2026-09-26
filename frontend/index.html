@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Defense Brief Dashboard</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="app" class="app-shell">
+      <header class="topbar">
+        <div class="brand-block">
+          <p class="eyebrow">Defense intelligence</p>
+          <h1>Defense Brief</h1>
+        </div>
+        <div class="header-actions">
+          <div class="view-switcher" aria-label="Main views">
+            <button type="button" class="nav-tab active" data-view="dashboard">Dashboard</button>
+            <button type="button" class="nav-tab" data-view="sources">Sources</button>
+          </div>
+          <button id="themeToggleBtn" class="secondary theme-toggle" type="button" aria-label="Toggle color theme">Light mode</button>
+          <div class="live-pill">Live monitor</div>
+          <button id="logoutBtn" class="secondary hidden">Logout</button>
+        </div>
+      </header>
+
+      <main>
+        <section id="authCard" class="card auth-card">
+          <div class="auth-header">
+            <div class="auth-mark">DB</div>
+            <div>
+              <p class="eyebrow">Secure access</p>
+              <h2>Operator sign in</h2>
+            </div>
+          </div>
+          <form id="loginForm">
+            <label>
+              Email
+              <input id="emailInput" type="email" value="admin@defensebrief.com" required />
+            </label>
+            <label>
+              Password
+              <input id="passwordInput" type="password" value="Defence123!" required />
+            </label>
+            <button type="submit">Access dashboard</button>
+          </form>
+          <p class="hint">Use the seeded operator account for the demo.</p>
+        </section>
+
+        <section id="dashboard" class="hidden dashboard">
+          <div id="dashboardView" class="view-panel">
+            <section class="hero-panel card">
+              <div class="hero-copy">
+                <p class="eyebrow">Global coverage</p>
+                <h2>the news<br>dispatch.</h2>
+                <p id="heroMeta">Monitoring military, aerospace, and regional security developments across key theaters.</p>
+              </div>
+              <div class="hero-actions">
+                <button type="button" class="secondary">Sign in</button>
+                <button type="button">Subscribe</button>
+              </div>
+            </section>
+
+            <nav class="editorial-nav" aria-label="News categories">
+              <button type="button" class="editorial-tab active">Latest</button>
+              <button type="button" class="editorial-tab">World</button>
+              <button type="button" class="editorial-tab">Sports</button>
+              <button type="button" class="editorial-tab">Culture</button>
+              <button type="button" class="editorial-tab">Wellness</button>
+              <button type="button" class="editorial-tab">Economy</button>
+            </nav>
+
+            <div class="stats-grid" id="statsGrid"></div>
+
+            <section class="command-grid">
+              <article class="card command-panel">
+                <div class="card-header split">
+                  <div>
+                    <p class="eyebrow">Search</p>
+                    <h2>Intel filters</h2>
+                  </div>
+                  <button id="resetFiltersBtn" class="secondary" type="button">Reset</button>
+                </div>
+
+                <form id="articleFilterForm" class="filter-form">
+                  <label>
+                    Search stories
+                    <input id="searchInput" type="text" placeholder="Search titles, keywords, or summaries" />
+                  </label>
+                  <div class="filter-row">
+                    <label>
+                      Category
+                      <select id="categoryFilter">
+                        <option value="">All categories</option>
+                      </select>
+                    </label>
+                    <label>
+                      Country
+                      <select id="countryFilter">
+                        <option value="">All countries</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div class="filter-row">
+                    <label>
+                      Region
+                      <select id="regionFilter">
+                        <option value="">All regions</option>
+                      </select>
+                    </label>
+                    <label>
+                      Source
+                      <select id="sourceFilter">
+                        <option value="">All sources</option>
+                      </select>
+                    </label>
+                  </div>
+                </form>
+
+                <div class="results-header">
+                  <h3>Filtered coverage</h3>
+                  <span id="articleCountLabel">0 items</span>
+                </div>
+                <div id="articleResults" class="article-results"></div>
+              </article>
+
+            </section>
+
+            <div class="content-grid">
+              <article class="card media-card">
+                <div class="card-header split">
+                  <h2>Top developments</h2>
+                </div>
+                <div id="topDevelopments" class="list-group"></div>
+              </article>
+
+              <article class="card media-card">
+                <div class="card-header split">
+                  <h2>Latest news</h2>
+                </div>
+                <div id="latestNews" class="list-group"></div>
+              </article>
+            </div>
+
+            <article class="card newsletter-card">
+              <div class="card-header split">
+                <div>
+                  <p class="eyebrow">Daily brief</p>
+                  <h2>Current summary</h2>
+                </div>
+                <button id="generateBriefBtn" class="secondary">Generate brief</button>
+              </div>
+              <div id="newsletterPanel" class="newsletter-panel"></div>
+            </article>
+          </div>
+
+          <div id="sourceView" class="view-panel hidden">
+            <section class="card source-management-panel">
+              <div class="card-header split">
+                <div>
+                  <p class="eyebrow">Operations</p>
+                  <h2>Source management</h2>
+                </div>
+                <div style="display:flex;gap:8px;align-items:center;">
+                  <button id="triggerHealthBtn" type="button" class="secondary">Trigger health alert</button>
+                  <button type="button" class="secondary" data-view-switch="dashboard">Back to dashboard</button>
+                </div>
+              </div>
+
+              <div class="source-manager-shell">
+                <div class="source-form-card">
+                  <div class="section-kicker">Add or update</div>
+                  <form id="sourceForm" class="source-form">
+                    <label>
+                      Source name
+                      <input id="sourceName" type="text" placeholder="e.g., Reuters Defense" required />
+                    </label>
+                    <label>
+                      Website URL
+                      <input id="sourceWebsite" type="url" placeholder="https://example.com" required />
+                    </label>
+                    <label>
+                      Feed URL
+                      <input id="sourceFeed" type="url" placeholder="https://example.com/rss" />
+                    </label>
+                    <div class="filter-row">
+                      <label>
+                        Source type
+                        <input id="sourceType" type="text" value="RSS" required />
+                      </label>
+                      <label>
+                        Reliability
+                        <input id="sourceReliability" type="number" min="0" max="100" value="85" required />
+                      </label>
+                    </div>
+                    <div class="filter-row">
+                      <label>
+                        Frequency (minutes)
+                        <input id="sourceFrequency" type="number" min="30" value="360" required />
+                      </label>
+                      <label>
+                        Active
+                        <select id="sourceActive">
+                          <option value="true" selected>Yes</option>
+                          <option value="false">No</option>
+                        </select>
+                      </label>
+                    </div>
+                    <button type="submit">Add source</button>
+                  </form>
+                </div>
+
+                <div class="source-list-card">
+                  <div class="source-list-header">
+                    <div>
+                      <div class="section-kicker">Tracked sources</div>
+                      <h3>Feed coverage</h3>
+                    </div>
+                    <div class="source-counter-box">
+                      <span>Healthy</span>
+                      <strong id="sourceManagerHealthy">0</strong>
+                    </div>
+                  </div>
+                  <div id="sourceTable" class="source-table"></div>
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div id="articleDetailModal" class="modal hidden" aria-hidden="true">
+      <div class="modal-backdrop" data-close-modal="true"></div>
+      <div class="modal-panel card" role="dialog" aria-modal="true" aria-labelledby="articleDetailTitle">
+        <button id="closeModalBtn" class="secondary close-modal" type="button">Close</button>
+        <div id="articleDetailContent"></div>
+      </div>
+    </div>
+
+    <!-- Dedicated Source Health Modal -->
+    <div id="sourceHealthModal" class="modal hidden" aria-hidden="true">
+      <div class="modal-backdrop" data-close-health-modal="true"></div>
+      <div class="modal-panel card source-health-panel" role="dialog" aria-modal="true" aria-labelledby="sourceHealthTitle">
+        <button id="closeHealthModalBtn" class="secondary close-modal" type="button">Close</button>
+        <div id="sourceHealthContent"></div>
+      </div>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>

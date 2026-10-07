@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_current_user
+from app.api.dependencies import get_current_user, require_admin
 from app.database import get_db
 from app.models.source import Source
 from app.models.source_collection_job import SourceCollectionJob
@@ -33,7 +33,11 @@ def list_sources(
     return service.get_all()
 
 
-@router.get("/{source_id}/job", response_model=SourceCollectionJobResponse)
+@router.get(
+    "/{source_id}/job",
+    response_model=SourceCollectionJobResponse,
+    dependencies=[Depends(require_admin)],
+)
 def get_source_collection_job(
     source_id: int,
     db: Session = Depends(get_db),
@@ -59,6 +63,7 @@ def get_source_collection_job(
     "/{source_id}/job",
     response_model=SourceCollectionJobResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_admin)],
 )
 def create_source_collection_job(
     source_id: int,
@@ -79,6 +84,7 @@ def create_source_collection_job(
 @router.patch(
     "/{source_id}/job",
     response_model=SourceCollectionJobResponse,
+    dependencies=[Depends(require_admin)],
 )
 def update_source_collection_job(
     source_id: int,
@@ -105,6 +111,7 @@ def update_source_collection_job(
 @router.delete(
     "/{source_id}/job",
     status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_admin)],
 )
 def delete_source_collection_job(
     source_id: int,
@@ -130,6 +137,7 @@ def delete_source_collection_job(
 @router.patch(
     "/{source_id}",
     response_model=SourceResponse,
+    dependencies=[Depends(require_admin)],
 )
 def update_source(
     source_id: int,
@@ -158,6 +166,7 @@ def update_source(
     "",
     response_model=SourceResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_admin)],
 )
 def create_source(
     source_data: SourceCreate,
@@ -195,6 +204,7 @@ def get_source(
     "/{source_id}/collect",
     response_model=CollectionRunResponse,
     status_code=status.HTTP_200_OK,
+    dependencies=[Depends(require_admin)],
 )
 def collect_source_endpoint(
     source_id: int,
@@ -224,6 +234,7 @@ def collect_source_endpoint(
 @router.delete(
     "/{source_id}",
     status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_admin)],
 )
 def delete_source(
     source_id: int,

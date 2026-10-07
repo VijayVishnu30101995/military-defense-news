@@ -5,7 +5,7 @@ from app.models.category import Category
 from app.models.country import Country
 from app.models.region import Region
 from app.models.source import Source
-from app.models.user import User
+from app.models.user import ROLE_ADMIN, User
 
 
 DEFAULT_COUNTRIES = [
@@ -179,6 +179,7 @@ def ensure_reference_data(db: Session) -> None:
                 email=DEFAULT_ADMIN_EMAIL,
                 password_hash=hash_password(DEFAULT_ADMIN_PASSWORD),
                 display_name="Defense Brief Admin",
+                role=ROLE_ADMIN,
                 is_active=True,
             )
         )

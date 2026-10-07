@@ -47,5 +47,6 @@ def get_me(
         id=current_user.id,
         email=current_user.email,
         display_name=current_user.display_name,
+        role=current_user.role,
         is_active=current_user.is_active,
     )

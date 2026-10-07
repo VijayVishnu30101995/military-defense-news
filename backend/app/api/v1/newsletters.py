@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_current_user
+from app.api.dependencies import get_current_user, require_admin
 from app.database import get_db
 from app.schemas.newsletter import NewsletterResponse
 from app.services.newsletter import NewsletterService
@@ -16,7 +16,12 @@ def list_newsletters(db: Session = Depends(get_db)) -> list[NewsletterResponse]:
     return service.list_newsletters()
 
 
-@router.post("/generate", response_model=NewsletterResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/generate",
+    response_model=NewsletterResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_admin)],
+)
 def generate_newsletter(
     db: Session = Depends(get_db),
 ) -> NewsletterResponse:

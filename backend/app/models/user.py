@@ -6,6 +6,10 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.database import Base
 
 
+ROLE_ADMIN = "admin"
+ROLE_VIEWER = "viewer"
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -26,6 +30,13 @@ class User(Base):
     display_name: Mapped[str] = mapped_column(
         String(255),
         nullable=False,
+    )
+
+    role: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default=ROLE_VIEWER,
+        server_default=ROLE_VIEWER,
     )
 
     is_active: Mapped[bool] = mapped_column(

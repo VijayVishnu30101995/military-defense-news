@@ -4,32 +4,57 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Defense Brief Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=Big+Shoulders+Display:wght@500;700;800;900&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
+    />
     <link rel="stylesheet" href="styles.css" />
   </head>
-  <body>
+  <body data-theme="dark">
+    <div class="ops-strip" role="presentation">
+      <span class="ops-strip-label">Open source</span>
+      <span class="ops-strip-sep" aria-hidden="true">//</span>
+      <span>Defense Brief</span>
+      <span class="ops-strip-sep ops-strip-wide" aria-hidden="true">//</span>
+      <span class="ops-strip-wide">Daily situation report</span>
+      <span class="ops-strip-clock"><span id="utcClock">--:--:--</span> UTC</span>
+    </div>
+
     <div id="app" class="app-shell">
       <header class="topbar">
         <div class="brand-block">
-          <p class="eyebrow">Defense intelligence</p>
-          <h1>Defense Brief</h1>
+          <div class="brand-mark" aria-hidden="true"><span>DB</span></div>
+          <div>
+            <p class="eyebrow">Defense intelligence</p>
+            <h1>Defense Brief</h1>
+          </div>
         </div>
         <div class="header-actions">
           <div id="viewSwitcher" class="view-switcher hidden" aria-label="Main views">
             <button type="button" class="nav-tab active" data-view="dashboard">Dashboard</button>
-            <button type="button" class="nav-tab" data-view="sources">Sources</button>
+            <button type="button" class="nav-tab admin-only" data-view="sources">Sources</button>
           </div>
+          <div class="live-pill"><span class="live-dot" aria-hidden="true"></span>Live monitor</div>
           <button id="themeToggleBtn" class="secondary theme-toggle" type="button" aria-label="Toggle color theme">Light mode</button>
-          <div class="live-pill">Live monitor</div>
           <button id="logoutBtn" class="secondary hidden">Logout</button>
         </div>
       </header>
 
       <main>
         <section id="authCard" class="card auth-card">
-          <div class="auth-visual" role="img" aria-label="Military aircraft flying over a coastal landscape">
+          <div class="auth-visual" aria-hidden="true">
+            <div class="radar radar-lg">
+              <div class="radar-sweep"></div>
+              <span class="radar-blip b1"></span>
+              <span class="radar-blip b2"></span>
+              <span class="radar-blip b3"></span>
+            </div>
             <div class="auth-visual-caption">
               <p class="eyebrow">Defense intelligence</p>
               <h2>Clarity in a changing world.</h2>
+              <p class="auth-visual-meta">Air · Land · Naval · Cyber · Space</p>
             </div>
           </div>
           <div class="auth-content">
@@ -43,11 +68,11 @@
             <form id="loginForm">
               <label>
                 Email
-                <input id="emailInput" type="email" value="admin@defensebrief.com" required />
+                <input id="emailInput" type="email" value="admin@defensebrief.com" autocomplete="username" required />
               </label>
               <label>
                 Password
-                <input id="passwordInput" type="password" value="Defence123!" required />
+                <input id="passwordInput" type="password" value="Defence123!" autocomplete="current-password" required />
               </label>
               <button type="submit">Access dashboard</button>
             </form>
@@ -59,117 +84,126 @@
           <div id="dashboardView" class="view-panel">
             <section class="hero-panel card">
               <div class="hero-copy">
-                <p class="eyebrow">Global coverage</p>
-                <h2>the news<br>dispatch.</h2>
+                <p class="eyebrow">Global coverage · <span id="heroDate">Today</span></p>
+                <h2>The news<br><em>dispatch.</em></h2>
                 <p id="heroMeta">Monitoring military, aerospace, and regional security developments across key theaters.</p>
               </div>
-              <div class="hero-actions">
-                <button type="button" class="secondary">Sign in</button>
-                <button type="button">Subscribe</button>
+              <div class="hero-radar" aria-hidden="true">
+                <div class="radar">
+                  <div class="radar-sweep"></div>
+                  <span class="radar-blip b1"></span>
+                  <span class="radar-blip b2"></span>
+                  <span class="radar-blip b3"></span>
+                </div>
               </div>
             </section>
 
-            <nav class="editorial-nav" aria-label="News categories">
-              <button type="button" class="editorial-tab active">Latest</button>
-              <button type="button" class="editorial-tab">World</button>
-              <button type="button" class="editorial-tab">Sports</button>
-              <button type="button" class="editorial-tab">Culture</button>
-              <button type="button" class="editorial-tab">Wellness</button>
-              <button type="button" class="editorial-tab">Economy</button>
-            </nav>
+            <div class="ticker" aria-label="Latest headlines">
+              <span class="ticker-label">Flash</span>
+              <div class="ticker-track">
+                <div id="newsTicker" class="ticker-items">
+                  <span class="ticker-item">Awaiting incoming reports…</span>
+                </div>
+              </div>
+            </div>
 
             <div class="stats-grid" id="statsGrid"></div>
 
-            <section class="command-grid">
-              <article class="card command-panel">
-                <div class="card-header split">
-                  <div>
-                    <p class="eyebrow">Search</p>
-                    <h2>Intel filters</h2>
+            <div class="board">
+              <section class="board-main command-grid">
+                <article class="card command-panel">
+                  <div class="card-header split">
+                    <div>
+                      <p class="eyebrow">Search</p>
+                      <h2>Intel filters</h2>
+                    </div>
+                    <button id="resetFiltersBtn" class="secondary" type="button">Reset</button>
                   </div>
-                  <button id="resetFiltersBtn" class="secondary" type="button">Reset</button>
-                </div>
 
-                <form id="articleFilterForm" class="filter-form">
-                  <label>
-                    Search stories
-                    <input id="searchInput" type="text" placeholder="Search titles, keywords, or summaries" />
-                  </label>
-                  <div class="filter-row">
-                    <label>
-                      Category
-                      <select id="categoryFilter">
-                        <option value="">All categories</option>
-                      </select>
+                  <form id="articleFilterForm" class="filter-form">
+                    <label class="search-field">
+                      Search stories
+                      <input id="searchInput" type="text" placeholder="Search titles, keywords, or summaries" />
                     </label>
-                    <label>
-                      Country
-                      <select id="countryFilter">
-                        <option value="">All countries</option>
-                      </select>
-                    </label>
+                    <div class="filter-row filter-row-4">
+                      <label>
+                        Category
+                        <select id="categoryFilter">
+                          <option value="">All categories</option>
+                        </select>
+                      </label>
+                      <label>
+                        Country
+                        <select id="countryFilter">
+                          <option value="">All countries</option>
+                        </select>
+                      </label>
+                      <label>
+                        Region
+                        <select id="regionFilter">
+                          <option value="">All regions</option>
+                        </select>
+                      </label>
+                      <label>
+                        Source
+                        <select id="sourceFilter">
+                          <option value="">All sources</option>
+                        </select>
+                      </label>
+                    </div>
+                  </form>
+
+                  <div class="results-header">
+                    <h3>Filtered coverage</h3>
+                    <span id="articleCountLabel">0 items</span>
                   </div>
-                  <div class="filter-row">
-                    <label>
-                      Region
-                      <select id="regionFilter">
-                        <option value="">All regions</option>
-                      </select>
-                    </label>
-                    <label>
-                      Source
-                      <select id="sourceFilter">
-                        <option value="">All sources</option>
-                      </select>
-                    </label>
+                  <div id="articleResults" class="article-results"></div>
+                </article>
+              </section>
+
+              <aside class="board-side">
+                <article class="card media-card">
+                  <div class="card-header split">
+                    <div>
+                      <p class="eyebrow">Priority</p>
+                      <h2>Top developments</h2>
+                    </div>
                   </div>
-                </form>
+                  <div id="topDevelopments" class="list-group ranked"></div>
+                </article>
 
-                <div class="results-header">
-                  <h3>Filtered coverage</h3>
-                  <span id="articleCountLabel">0 items</span>
-                </div>
-                <div id="articleResults" class="article-results"></div>
-              </article>
+                <article class="card newsletter-card">
+                  <div class="card-header split">
+                    <div>
+                      <p class="eyebrow">Daily brief</p>
+                      <h2>Current summary</h2>
+                    </div>
+                    <button id="generateBriefBtn" class="secondary admin-only">Generate brief</button>
+                  </div>
+                  <div id="newsletterPanel" class="newsletter-panel"></div>
+                </article>
 
-            </section>
-
-            <div class="content-grid">
-              <article class="card media-card">
-                <div class="card-header split">
-                  <h2>Top developments</h2>
-                </div>
-                <div id="topDevelopments" class="list-group"></div>
-              </article>
-
-              <article class="card media-card">
-                <div class="card-header split">
-                  <h2>Latest news</h2>
-                </div>
-                <div id="latestNews" class="list-group"></div>
-              </article>
+                <article class="card media-card">
+                  <div class="card-header split">
+                    <div>
+                      <p class="eyebrow">Wire</p>
+                      <h2>Latest news</h2>
+                    </div>
+                  </div>
+                  <div id="latestNews" class="list-group compact"></div>
+                </article>
+              </aside>
             </div>
-
-            <article class="card newsletter-card">
-              <div class="card-header split">
-                <div>
-                  <p class="eyebrow">Daily brief</p>
-                  <h2>Current summary</h2>
-                </div>
-                <button id="generateBriefBtn" class="secondary">Generate brief</button>
-              </div>
-              <div id="newsletterPanel" class="newsletter-panel"></div>
-            </article>
           </div>
 
-          <div id="sourceView" class="view-panel hidden">
+          <div id="sourceView" class="view-panel hidden admin-only">
             <section class="card source-management-panel">
               <div class="card-header split">
                 <div>
                   <p class="eyebrow">Operations</p>
                   <h2>Source management</h2>
                 </div>
-                <div style="display:flex;gap:8px;align-items:center;">
+                <div class="header-button-row">
                   <button id="triggerHealthBtn" type="button" class="secondary">Trigger health alert</button>
                   <button type="button" class="secondary" data-view-switch="dashboard">Back to dashboard</button>
                 </div>
@@ -236,6 +270,12 @@
           </div>
         </section>
       </main>
+
+      <footer class="app-footer">
+        <span>Defense Brief</span>
+        <span aria-hidden="true">//</span>
+        <span>Open-source defense monitoring</span>
+      </footer>
     </div>
 
     <div id="articleDetailModal" class="modal hidden" aria-hidden="true">

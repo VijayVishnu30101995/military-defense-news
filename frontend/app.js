@@ -53,7 +53,11 @@ const categoryImages = {
   Default: 'https://images.unsplash.com/photo-1534796636912-3b95b3ab5986?auto=format&fit=crop&w=900&q=80',
 };
 
+const HEALTH_REFRESH_INTERVAL_MS = 60000; // 60s
+let healthRefreshTimer = null;
+
 const state = {
+  user: null,
   countries: [],
   regions: [],
   categories: [],
@@ -74,7 +78,7 @@ function setToken(token) {
 }
 
 function getTheme() {
-  return localStorage.getItem(themeKey) || 'light';
+  return localStorage.getItem(themeKey) || 'dark';
 }
 
 function setTheme(theme) {
@@ -100,6 +104,19 @@ function cssUrl(value) {
 function getCategoryImage(categories) {
   const category = Array.isArray(categories) && categories.length ? categories[0] : 'Default';
   return categoryImages[category] || categoryImages.Default;
+}
+
+function isAdmin() {
+  return state.user?.role === 'admin';
+}
+
+function setCurrentUser(user) {
+  state.user = user;
+  if (user?.role) {
+    document.body.dataset.role = user.role;
+  } else {
+    delete document.body.dataset.role;
+  }
 }
 
 function getLabelById(list, id) {
@@ -161,7 +178,7 @@ function renderStats(data) {
   if (!existingHealth) {
     const node = document.createElement('div');
     node.id = 'healthAggregateCard';
-    node.className = 'stat-card health';
+    node.className = 'stat-card health admin-only';
     node.innerHTML = `<div class="label">Healthy sources</div><div class="value">0</div>`;
     statsGrid.prepend(node);
   }
@@ -284,6 +301,54 @@ function renderNewsList(container, items) {
       </article>
     `;
   }).join('');
+}
+
+function renderTicker(items) {
+  const ticker = document.getElementById('newsTicker');
+  if (!ticker) return;
+
+  if (!items.length) {
+    ticker.classList.remove('scrolling');
+    ticker.innerHTML = '<span class="ticker-item">Awaiting incoming reports…</span>';
+    return;
+  }
+
+  const markup = items.map((item) => {
+    const tag = Array.isArray(item.categories) && item.categories.length ? item.categories[0] : 'Defense';
+    return `
+      <span class="ticker-item">
+        <span class="ticker-tag">${escapeHtml(tag)}</span>
+        <a href="${escapeHtml(item.original_url || '#')}" target="_blank" rel="noreferrer">${escapeHtml(item.title)}</a>
+      </span>
+    `;
+  }).join('');
+
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  // The list is rendered twice so the scroll can loop seamlessly at -50%.
+  ticker.innerHTML = reduceMotion ? markup : markup + markup.replace(/<a /g, '<a tabindex="-1" aria-hidden="true" ');
+  ticker.classList.toggle('scrolling', !reduceMotion);
+  ticker.style.setProperty('--ticker-duration', `${Math.max(30, items.length * 7)}s`);
+}
+
+function startClock() {
+  const clock = document.getElementById('utcClock');
+  const heroDate = document.getElementById('heroDate');
+
+  const tick = () => {
+    const now = new Date();
+    if (clock) clock.textContent = now.toISOString().slice(11, 19);
+    if (heroDate) {
+      heroDate.textContent = now.toLocaleDateString(undefined, {
+        weekday: 'short',
+        day: '2-digit',
+        month: 'short',
+        year: 'numeric',
+      });
+    }
+  };
+
+  tick();
+  setInterval(tick, 1000);
 }
 
 function renderNewsletter(newsletter) {
@@ -494,7 +559,7 @@ function showSourceHealthModal(health) {
   }
 
   content.innerHTML = `
-    <div class="article-detail-hero" style="background: linear-gradient(180deg, rgba(0,0,0,0.04), rgba(0,0,0,0.06));">
+    <div class="article-detail-hero plain">
       <div class="article-detail-overlay">
         <p class="eyebrow">Source health</p>
         <h3 id="sourceHealthTitle">${escapeHtml(health.name || 'Unknown')}</h3>
@@ -657,6 +722,13 @@ async function loadDashboard() {
     renderNewsList(topDevelopments, dashboard.top_developments || dashboard.important_articles || []);
     renderNewsList(latestNews, dashboard.latest_news || dashboard.latest_articles || []);
 
+    const seen = new Set();
+    const tickerItems = [
+      ...(dashboard.top_developments || []),
+      ...(dashboard.latest_news || []),
+    ].filter((item) => item && !seen.has(item.id) && seen.add(item.id));
+    renderTicker(tickerItems);
+
     const newsletter = dashboard.newsletter || {};
     if (newsletter.available) {
       const details = await api(`/newsletters/${newsletter.id}`);
@@ -682,13 +754,52 @@ async function login(event) {
     });
 
     setToken(result.access_token);
-    authCard.classList.add('hidden');
-    dashboardEl.classList.remove('hidden');
-    showView('dashboard');
-    logoutBtn.classList.remove('hidden');
-    await Promise.all([loadDashboard(), loadReferenceData(), loadArticles()]);
   } catch (error) {
     alert(`Login failed: ${error.message}`);
+    return;
+  }
+
+  await startSession();
+}
+
+async function startSession() {
+  try {
+    setCurrentUser(await api('/auth/me'));
+  } catch (error) {
+    // api() already logged out on 401. For other failures keep the session
+    // but leave the role unset, so admin controls stay hidden.
+    if (!getToken()) return;
+    console.warn('Unable to load current user:', error);
+  }
+
+  authCard.classList.add('hidden');
+  dashboardEl.classList.remove('hidden');
+  logoutBtn.classList.remove('hidden');
+  showView('dashboard');
+  await Promise.all([loadDashboard(), loadReferenceData(), loadArticles()]);
+
+  if (isAdmin()) {
+    startHealthRefresh();
+  }
+}
+
+function startHealthRefresh() {
+  stopHealthRefresh();
+  // Periodic refresh for sources and aggregate health
+  healthRefreshTimer = setInterval(async () => {
+    try {
+      await refreshSourcesAndHealth();
+    } catch (e) {
+      // ignore refresh errors — keep timer running
+      console.warn('Health refresh failed', e);
+    }
+  }, HEALTH_REFRESH_INTERVAL_MS);
+}
+
+function stopHealthRefresh() {
+  if (healthRefreshTimer) {
+    clearInterval(healthRefreshTimer);
+    healthRefreshTimer = null;
   }
 }
 
@@ -804,13 +915,13 @@ async function deleteSource(sourceId) {
 }
 
 function showView(viewName) {
-  const isDashboard = viewName === 'dashboard';
+  const isDashboard = viewName === 'dashboard' || !isAdmin();
   viewSwitcher.classList.toggle('hidden', !getToken());
   dashboardView.classList.toggle('hidden', !isDashboard);
   sourceView.classList.toggle('hidden', isDashboard);
 
   navTabs.forEach((tab) => {
-    const active = tab.dataset.view === viewName;
+    const active = tab.dataset.view === (isDashboard ? 'dashboard' : viewName);
     tab.classList.toggle('active', active);
     tab.setAttribute('aria-pressed', String(active));
   });
@@ -818,6 +929,8 @@ function showView(viewName) {
 
 function logout() {
   setToken(null);
+  setCurrentUser(null);
+  stopHealthRefresh();
   authCard.classList.remove('hidden');
   dashboardEl.classList.add('hidden');
   logoutBtn.classList.add('hidden');
@@ -897,7 +1010,7 @@ if (triggerHealthBtn) {
       const modal = document.getElementById('sourceHealthModal');
       const content = document.getElementById('sourceHealthContent');
       content.innerHTML = `
-        <div class="article-detail-hero" style="background: linear-gradient(180deg, rgba(0,0,0,0.03), rgba(0,0,0,0.06));">
+        <div class="article-detail-hero plain">
           <div class="article-detail-overlay">
             <p class="eyebrow">Health check</p>
             <h3 id="sourceHealthTitle">Manual health alert results</h3>
@@ -950,7 +1063,7 @@ if (triggerHealthBtn) {
             }).join('');
 
             content.innerHTML = `
-              <div class="article-detail-hero" style="background: linear-gradient(180deg, rgba(0,0,0,0.03), rgba(0,0,0,0.06));">
+              <div class="article-detail-hero plain">
                 <div class="article-detail-overlay">
                   <p class="eyebrow">Affected sources</p>
                   <h3 id="sourceHealthTitle">Health details</h3>
@@ -1199,31 +1312,15 @@ themeToggleBtn.addEventListener('click', () => {
   setTheme(nextTheme);
 });
 
-setTheme('light');
+setTheme(getTheme());
+startClock();
 
 showView('dashboard');
 
+window.addEventListener('beforeunload', stopHealthRefresh);
+
 if (getToken()) {
-  authCard.classList.add('hidden');
-  dashboardEl.classList.remove('hidden');
-  logoutBtn.classList.remove('hidden');
-  Promise.all([loadDashboard(), loadReferenceData(), loadArticles()]);
-
-  // Start periodic refresh for sources and aggregate health
-  const HEALTH_REFRESH_INTERVAL_MS = 60000; // 60s
-  let healthRefreshTimer = setInterval(async () => {
-    try {
-      await refreshSourcesAndHealth();
-    } catch (e) {
-      // ignore refresh errors — keep timer running
-      console.warn('Health refresh failed', e);
-    }
-  }, HEALTH_REFRESH_INTERVAL_MS);
-
-  // Clear timer on page unload
-  window.addEventListener('beforeunload', () => {
-    if (healthRefreshTimer) clearInterval(healthRefreshTimer);
-  });
+  startSession();
 }
 
 // Refresh helper used by the periodic timer and can be invoked manually

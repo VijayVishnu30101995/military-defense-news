@@ -5,7 +5,7 @@ import jwt
 
 from app.core.jwt import decode_access_token
 from app.database import get_db
-from app.models.user import User
+from app.models.user import ROLE_ADMIN, User
 
 bearer_scheme = HTTPBearer()
 
@@ -60,3 +60,14 @@ def get_current_user(
         )
 
     return user
+
+def require_admin(
+    current_user: User = Depends(get_current_user),
+) -> User:
+    if current_user.role != ROLE_ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Administrator access required",
+        )
+
+    return current_user

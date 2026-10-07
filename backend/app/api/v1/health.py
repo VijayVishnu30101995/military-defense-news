@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_current_user
+from app.api.dependencies import require_admin
 from app.database import get_db
 from app.models.job_run import JobRun
 from app.models.source import Source
@@ -15,7 +15,7 @@ from app.models.source_collection_job import SourceCollectionJob
 router = APIRouter(
     prefix="/sources",
     tags=["Source Health"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=[Depends(require_admin)],
 )
 
 

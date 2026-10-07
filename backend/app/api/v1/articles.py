@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_current_user
+from app.api.dependencies import get_current_user, require_admin
 from app.core.content_filters import is_sports_story
 from app.database import get_db
 from app.models.article import Article
@@ -205,7 +205,7 @@ def get_newsletter(newsletter_id: int, db: Session = Depends(get_db)) -> dict:
     }
 
 
-@router.post("/newsletters/generate")
+@router.post("/newsletters/generate", dependencies=[Depends(require_admin)])
 def generate_newsletter(db: Session = Depends(get_db)) -> dict:
     newsletter_date = date.today()
     newsletter = db.query(Newsletter).filter(Newsletter.newsletter_date == newsletter_date).first()

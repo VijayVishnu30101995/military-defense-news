@@ -8,6 +8,7 @@ from app.api.v1.articles import router as articles_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.health import router as health_router
 from app.api.v1.sources import router as sources_router
+from app.api.v1.users import router as users_router
 from app.api.dependencies import get_current_user
 from app.core.reference_data import ensure_reference_data
 from app.database import SessionLocal, engine
@@ -42,17 +43,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:8080",
-        "http://127.0.0.1:8080",
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 
 app.include_router(
     auth_router,
@@ -72,6 +62,11 @@ app.include_router(
 
 app.include_router(
     health_router,
+    prefix="/api/v1",
+)
+
+app.include_router(
+    users_router,
     prefix="/api/v1",
 )
 
@@ -103,6 +98,7 @@ def get_me_alias(
         id=current_user.id,
         email=current_user.email,
         display_name=current_user.display_name,
+        role=current_user.role,
         is_active=current_user.is_active,
     )
 

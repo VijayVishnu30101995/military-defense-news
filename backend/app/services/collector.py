@@ -9,7 +9,7 @@ from xml.etree import ElementTree
 
 from sqlalchemy.orm import Session
 
-from app.core.content_filters import is_sports_story
+from app.core.content_filters import is_off_topic_story
 from app.models.article import Article
 from app.models.job_run import JobRun
 from app.models.source import Source
@@ -32,7 +32,11 @@ class SourceCollectorService:
     def _safe_text(element) -> str | None:
         if element is None:
             return None
-        text = "".join(element.itertext()).strip()
+        text = "".join(element.itertext())
+        # Some feeds (e.g. Google News) put HTML inside the description.
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = text.replace("&nbsp;", " ").replace("\xa0", " ")
+        text = re.sub(r"\s+", " ", text).strip()
         return text or None
 
     @staticmethod
@@ -181,6 +185,10 @@ class SourceCollectorService:
 
     def _resolve_article_image(self, article_url: str | None, fallback_base_url: str | None = None) -> str | None:
         if not article_url:
+            return None
+
+        # Google News links are redirect pages whose og:image is Google's own logo.
+        if urlparse(article_url).netloc.endswith("news.google.com"):
             return None
 
         try:
@@ -353,7 +361,7 @@ class SourceCollectorService:
         for item in items:
             link = item["link"]
             title = item["title"]
-            if is_sports_story(title, item.get("summary")):
+            if is_off_topic_story(title, item.get("summary")):
                 continue
 
             normalized_url = ArticleRepository.normalize_url(link)

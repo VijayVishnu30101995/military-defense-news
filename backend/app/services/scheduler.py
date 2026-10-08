@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timezone
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -9,6 +10,7 @@ from app.models.source_collection_job import SourceCollectionJob
 from app.services.collector import SourceCollectorService
 
 
+logger = logging.getLogger(__name__)
 scheduler = BackgroundScheduler()
 
 
@@ -34,7 +36,10 @@ def run_due_collection_jobs() -> None:
             try:
                 SourceCollectorService(db).collect_source(job.source_id)
             except Exception:
-                continue
+                # Feed fetch/parse failures are already recorded on the job run; this catches
+                # anything unexpected so it is at least visible in the logs.
+                logger.exception("Scheduled collection crashed for source %s (%s)", source.id, source.name)
+                db.rollback()
 
 
 def start_collection_scheduler() -> None:

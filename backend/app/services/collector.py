@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 import json
+import logging
 import re
 from urllib import request
 from urllib.parse import urljoin, urlparse
@@ -24,6 +25,8 @@ from app.schemas.source_collection_job import SourceCollectionJobCreate
 from app.services.alerts import alert_source_failure
 from app.services.feed_text import body_text_from_html, clean_author, clean_summary, score_importance, split_paragraphs
 from app.services.source_collection_job import SourceCollectionJobService
+
+logger = logging.getLogger(__name__)
 
 # Feeds routinely offer tracking pixels, site furniture and author avatars as the
 # first image. Storing one of those is worse than storing nothing.
@@ -91,6 +94,13 @@ def _decode_google_news_url(article_url: str) -> str | None:
         return None
     if urlparse(decoded).netloc.endswith("news.google.com"):
         return None
+    return decoded
+
+
+def _decode_google_news_url_logged(article_url: str) -> str | None:
+    decoded = _decode_google_news_url(article_url)
+    if decoded is None:
+        logger.warning("Could not decode Google News link %s; article page and image skipped", article_url)
     return decoded
 
 
@@ -334,7 +344,7 @@ class SourceCollectorService:
         # Google News links are redirect pages whose og:image is Google's own logo, so
         # fetch the publisher's article they point to instead.
         if urlparse(article_url).netloc.endswith("news.google.com"):
-            article_url = _decode_google_news_url(article_url)
+            article_url = _decode_google_news_url_logged(article_url)
             if not article_url:
                 return None
 
@@ -350,9 +360,12 @@ class SourceCollectorService:
             with request.urlopen(req, timeout=15) as response:
                 content_type = response.headers.get_content_type()
                 if content_type != "text/html" and "xml" not in content_type:
+                    logger.info("Article page %s returned %s; no page image checked", article_url, content_type)
                     return None
                 return response.read().decode("utf-8", errors="ignore")
-        except Exception:
+        except Exception as exc:
+            # Non-fatal: the story is still stored, just without the page's own image.
+            logger.warning("Could not fetch article page %s: %s", article_url, exc)
             return None
 
     def _best_article_image(self, article_url: str, item: dict, source: Source) -> str | None:
@@ -396,6 +409,10 @@ class SourceCollectorService:
                 changed += 1
         self.db.commit()
         return changed
+
+    @staticmethod
+    def _count_feed_entries(root: ElementTree.Element) -> int:
+        return sum(1 for item in root.iter() if item.tag.rsplit("}", 1)[-1] in ("item", "entry"))
 
     def _find_feed_items(self, root: ElementTree.Element, fallback_base_url: str | None = None) -> list[dict]:
         items = []
@@ -562,6 +579,8 @@ class SourceCollectorService:
             raise RuntimeError(f"Invalid XML feed: {exc}") from exc
 
         items = self._find_feed_items(root, fallback_base_url=source.website_url)
+        entries = self._count_feed_entries(root)
+        skipped = entries - len(items)
         created = 0
         for item in items:
             link = item["link"]
@@ -635,7 +654,24 @@ class SourceCollectorService:
             self.db.flush()
             created += 1
 
-        self._upsert_job_run(source_id, "SUCCESS", articles_found=len(items), articles_created=created)
+        # The run still counts as a success (the feed was reachable and parsed), but an
+        # empty or mostly-unusable feed is recorded as a warning so admins can see why
+        # nothing new arrived instead of a green status with no explanation.
+        warning = None
+        if not entries:
+            warning = "Feed parsed but contained no entries."
+        elif not items:
+            warning = f"Feed contained {entries} entries but none had a usable title and link."
+        elif skipped:
+            warning = f"Skipped {skipped} of {entries} feed entries with no usable title or link."
+        if warning:
+            logger.warning("Source %s (%s): %s", source_id, source.name, warning)
+        logger.info(
+            "Source %s (%s) collected: entries=%d usable=%d created=%d",
+            source_id, source.name, entries, len(items), created,
+        )
+
+        self._upsert_job_run(source_id, "SUCCESS", articles_found=len(items), articles_created=created, error=warning)
         source.last_success_at = datetime.now(timezone.utc)
         source.last_failure_at = None
         self.db.commit()
@@ -645,5 +681,5 @@ class SourceCollectorService:
             articles_found=len(items),
             articles_created=created,
             status="SUCCESS",
-            message=f"Processed {len(items)} feed items and created {created} articles.",
+            message=f"Processed {len(items)} feed items and created {created} articles." + (f" Warning: {warning}" if warning else ""),
         )

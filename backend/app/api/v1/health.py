@@ -35,8 +35,8 @@ def get_all_source_health(db: Session = Depends(get_db)) -> list[dict]:
                 "last_success_at": source.last_success_at.isoformat() if source.last_success_at else None,
                 "last_failure_at": source.last_failure_at.isoformat() if source.last_failure_at else None,
                 "job_last_run_at": last_run.started_at.isoformat() if last_run else None,
-                "job_last_success_at": last_run.completed_at.isoformat() if last_run and last_run.status == "success" and last_run.completed_at else None,
-                "job_last_failure_at": last_run.completed_at.isoformat() if last_run and last_run.status == "failed" and last_run.completed_at else None,
+                "job_last_success_at": last_run.completed_at.isoformat() if last_run and last_run.status == "SUCCESS" and last_run.completed_at else None,
+                "job_last_failure_at": last_run.completed_at.isoformat() if last_run and last_run.status == "FAILED" and last_run.completed_at else None,
                 "job_last_error": last_run.error_message if last_run else None,
             }
         )
@@ -78,7 +78,7 @@ def get_source_health(source_id: int, db: Session = Depends(get_db)) -> dict:
         "last_success_at": source.last_success_at.isoformat() if source.last_success_at else None,
         "last_failure_at": source.last_failure_at.isoformat() if source.last_failure_at else None,
         "job_last_run_at": last_run.started_at.isoformat() if last_run else None,
-        "job_last_success_at": last_run.completed_at.isoformat() if last_run and last_run.status == "success" and last_run.completed_at else None,
-        "job_last_failure_at": last_run.completed_at.isoformat() if last_run and last_run.status == "failed" and last_run.completed_at else None,
+        "job_last_success_at": last_run.completed_at.isoformat() if last_run and last_run.status == "SUCCESS" and last_run.completed_at else None,
+        "job_last_failure_at": last_run.completed_at.isoformat() if last_run and last_run.status == "FAILED" and last_run.completed_at else None,
         "job_last_error": last_run.error_message if last_run else None,
     }

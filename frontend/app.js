@@ -58,6 +58,7 @@ const categoryImages = {
 const HEALTH_REFRESH_INTERVAL_MS = 60000; // 60s
 let healthRefreshTimer = null;
 
+const PAGE_SIZE = 12;
 const state = {
   user: null,
   countries: [],
@@ -65,6 +66,7 @@ const state = {
   categories: [],
   sources: [],
   articles: [],
+  currentPage: 1,
 };
 
 function getToken() {
@@ -550,16 +552,39 @@ function renderSourceTable(sources) {
   }).join('');
 }
 
+function renderPagination(total, page) {
+  const totalPages = Math.ceil(total / PAGE_SIZE);
+  let el = document.getElementById('articlePagination');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'articlePagination';
+    el.className = 'pagination';
+    articleResults.insertAdjacentElement('afterend', el);
+  }
+  if (totalPages <= 1) { el.innerHTML = ''; return; }
+  const prev = `<button class="pg-btn" data-pg="${page - 1}" ${page === 1 ? 'disabled' : ''}>&#8592; Prev</button>`;
+  const next = `<button class="pg-btn" data-pg="${page + 1}" ${page === totalPages ? 'disabled' : ''}>Next &#8594;</button>`;
+  const nums = Array.from({ length: totalPages }, (_, i) => i + 1)
+    .map(n => `<button class="pg-btn pg-num ${n === page ? 'active' : ''}" data-pg="${n}">${n}</button>`)
+    .join('');
+  el.innerHTML = prev + nums + next;
+}
+
 function renderArticleResults(items) {
   const cleanItems = Array.isArray(items) ? items : [];
-  articleCountLabel.textContent = `${cleanItems.length} item${cleanItems.length === 1 ? '' : 's'}`;
+  const total = cleanItems.length;
+  const page = state.currentPage;
+  const start = (page - 1) * PAGE_SIZE;
+  const pageItems = cleanItems.slice(start, start + PAGE_SIZE);
+  articleCountLabel.textContent = `${total} item${total === 1 ? '' : 's'}`;
 
   if (!cleanItems.length) {
     articleResults.innerHTML = '<div class="empty-state">No stories match the current filters.</div>';
+    renderPagination(0, 1);
     return;
   }
 
-  articleResults.innerHTML = cleanItems.map((article) => {
+  articleResults.innerHTML = pageItems.map((article) => {
     const categories = Array.isArray(article.categories) && article.categories.length ? article.categories : ['Defense'];
     const summary = article.summary || article.description || 'No summary available.';
     const published = article.published_at ? new Date(article.published_at).toLocaleDateString(undefined, {
@@ -588,6 +613,7 @@ function renderArticleResults(items) {
       </article>
     `;
   }).join('');
+  renderPagination(total, page);
 }
 
 function parseKeyPoints(value) {
@@ -812,6 +838,7 @@ async function loadArticles() {
     });
 
     state.articles = filtered;
+    state.currentPage = 1;
     renderArticleResults(filtered);
   } catch (error) {
     articleResults.innerHTML = `<div class="empty-state">Unable to load articles: ${error.message}</div>`;
@@ -1045,7 +1072,14 @@ function logout() {
   emailInput.focus();
 }
 
-document.getElementById('togglePassword').addEventListener('click', () => {
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.pg-btn');
+  if (!btn || btn.disabled) return;
+  state.currentPage = parseInt(btn.dataset.pg, 10);
+  renderArticleResults(state.articles);
+  document.querySelector('.command-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+});
+
   const isPassword = passwordInput.type === 'password';
   passwordInput.type = isPassword ? 'text' : 'password';
   document.getElementById('togglePassword').textContent = isPassword ? '🙈' : '👁';

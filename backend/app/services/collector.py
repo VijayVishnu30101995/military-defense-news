@@ -401,6 +401,10 @@ class SourceCollectorService:
                 categories=self._infer_categories(title, item.get("summary")),
             )
             self.article_repository.create(article_data)
+            # Flush so later items in this same feed (aggregators like Google News
+            # often repeat a story across queries) are caught by find_duplicate,
+            # which otherwise can't see uncommitted adds on this autoflush=False session.
+            self.db.flush()
             created += 1
 
         self._upsert_job_run(source_id, "SUCCESS", articles_found=len(items), articles_created=created)

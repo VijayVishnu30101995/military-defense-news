@@ -65,7 +65,6 @@ const state = {
   regions: [],
   categories: [],
   sources: [],
-  articles: [],
   currentPage: 1,
 };
 
@@ -564,15 +563,13 @@ function renderPagination(total, page) {
   el.innerHTML = prev + nums + next;
 }
 
-function renderArticleResults(items) {
-  const cleanItems = Array.isArray(items) ? items : [];
-  const total = cleanItems.length;
-  const page = state.currentPage;
-  const start = (page - 1) * PAGE_SIZE;
-  const pageItems = cleanItems.slice(start, start + PAGE_SIZE);
+function renderArticleResults(result) {
+  const pageItems = Array.isArray(result.items) ? result.items : [];
+  const total = result.total || 0;
+  const page = result.page || 1;
   articleCountLabel.textContent = `${total} item${total === 1 ? '' : 's'}`;
 
-  if (!cleanItems.length) {
+  if (!total) {
     articleResults.innerHTML = '<div class="empty-state">No stories match the current filters.</div>';
     renderPagination(0, 1);
     return;
@@ -852,31 +849,23 @@ async function loadReferenceData() {
   }
 }
 
-async function loadArticles() {
+let articleRequestId = 0;
+
+async function loadArticles(page = 1) {
+  const requestId = ++articleRequestId;
+  const params = new URLSearchParams({ page: String(page), page_size: String(PAGE_SIZE) });
+  const search = searchInput.value.trim();
+  if (search) params.set('q', search);
+  if (categoryFilter.value) params.set('category_id', categoryFilter.value);
+  if (countryFilter.value) params.set('country_id', countryFilter.value);
+  if (regionFilter.value) params.set('region_id', regionFilter.value);
+  if (sourceFilter.value) params.set('source_id', sourceFilter.value);
+
   try {
-    const response = await api('/articles?page_size=100');
-    const searchValue = searchInput.value.trim().toLowerCase();
-    const hasCategory = categoryFilter.value;
-    const hasCountry = countryFilter.value;
-    const hasRegion = regionFilter.value;
-    const hasSource = sourceFilter.value;
-
-    const filtered = (Array.isArray(response) ? response : []).filter((article) => {
-      const articleText = [article.title, article.summary, article.description, (article.categories || []).join(' ')]
-        .join(' ')
-        .toLowerCase();
-      const matchesSearch = !searchValue || articleText.includes(searchValue);
-      const matchesCategory = !hasCategory || (article.categories || []).includes(state.categories.find((item) => Number(item.id) === Number(hasCategory))?.name || '');
-      const matchesCountry = !hasCountry || Number(article.country_id) === Number(hasCountry);
-      const matchesRegion = !hasRegion || Number(article.region_id) === Number(hasRegion);
-      const matchesSource = !hasSource || Number(article.source_id) === Number(hasSource);
-
-      return matchesSearch && matchesCategory && matchesCountry && matchesRegion && matchesSource;
-    });
-
-    state.articles = filtered;
-    state.currentPage = 1;
-    renderArticleResults(filtered);
+    const result = await api(`/articles?${params}`);
+    if (requestId !== articleRequestId) return;
+    state.currentPage = result.page;
+    renderArticleResults(result);
   } catch (error) {
     articleResults.innerHTML = `<div class="empty-state">Unable to load articles: ${error.message}</div>`;
   }
@@ -1125,8 +1114,7 @@ function logout() {
 document.addEventListener('click', (e) => {
   const btn = e.target.closest('.pg-btn');
   if (!btn || btn.disabled) return;
-  state.currentPage = parseInt(btn.dataset.pg, 10);
-  renderArticleResults(state.articles);
+  loadArticles(parseInt(btn.dataset.pg, 10));
   document.querySelector('.command-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
 });
 
@@ -1143,11 +1131,15 @@ logoutBtn.addEventListener('click', logout);
 generateBriefBtn.addEventListener('click', generateBrief);
 sourceForm.addEventListener('submit', submitSource);
 resetFiltersBtn.addEventListener('click', resetFilters);
-searchInput.addEventListener('input', loadArticles);
-categoryFilter.addEventListener('change', loadArticles);
-countryFilter.addEventListener('change', loadArticles);
-regionFilter.addEventListener('change', loadArticles);
-sourceFilter.addEventListener('change', loadArticles);
+let searchDebounceTimer = null;
+searchInput.addEventListener('input', () => {
+  clearTimeout(searchDebounceTimer);
+  searchDebounceTimer = setTimeout(() => loadArticles(), 300);
+});
+categoryFilter.addEventListener('change', () => loadArticles());
+countryFilter.addEventListener('change', () => loadArticles());
+regionFilter.addEventListener('change', () => loadArticles());
+sourceFilter.addEventListener('change', () => loadArticles());
 closeModalBtn.addEventListener('click', closeArticleDetail);
 articleDetailModal.addEventListener('click', (event) => {
   if (event.target.dataset.closeModal === 'true') {

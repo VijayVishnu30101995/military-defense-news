@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user, require_admin
@@ -27,14 +28,16 @@ router = APIRouter(
 )
 
 
-def _serialize_article(db: Session, article: Article) -> dict:
-    categories = (
-        db.query(Category.name)
-        .join(ArticleCategory, ArticleCategory.category_id == Category.id)
-        .filter(ArticleCategory.article_id == article.id)
-        .order_by(Category.name.asc())
-        .all()
-    )
+def _serialize_article(db: Session, article: Article, category_names: list[str] | None = None) -> dict:
+    if category_names is None:
+        category_names = [
+            name
+            for (name,) in db.query(Category.name)
+            .join(ArticleCategory, ArticleCategory.category_id == Category.id)
+            .filter(ArticleCategory.article_id == article.id)
+            .order_by(Category.name.asc())
+            .all()
+        ]
 
     return {
         "id": article.id,
@@ -55,12 +58,27 @@ def _serialize_article(db: Session, article: Article) -> dict:
         "importance_score": article.importance_score,
         "reliability_score": article.reliability_score,
         "key_points": article.key_points,
-        "categories": [name for (name,) in categories],
+        "categories": category_names,
         "processing_status": article.processing_status,
         "duplicate_status": article.duplicate_status,
         "created_at": article.created_at.isoformat() if article.created_at else None,
         "updated_at": article.updated_at.isoformat() if article.updated_at else None,
     }
+
+
+def _serialize_articles(db: Session, articles: list[Article]) -> list[dict]:
+    names_by_article: dict[int, list[str]] = defaultdict(list)
+    if articles:
+        rows = (
+            db.query(ArticleCategory.article_id, Category.name)
+            .join(Category, Category.id == ArticleCategory.category_id)
+            .filter(ArticleCategory.article_id.in_([article.id for article in articles]))
+            .order_by(Category.name.asc())
+            .all()
+        )
+        for article_id, name in rows:
+            names_by_article[article_id].append(name)
+    return [_serialize_article(db, article, names_by_article[article.id]) for article in articles]
 
 
 @router.get("/dashboard")
@@ -160,13 +178,65 @@ def list_categories(db: Session = Depends(get_db)) -> list[dict]:
 
 
 @router.get("/articles")
-def list_articles(db: Session = Depends(get_db)) -> list[dict]:
-    items = db.query(Article).order_by(Article.published_at.desc().nullslast(), Article.collected_at.desc()).all()
-    return [
-        _serialize_article(db, item)
-        for item in items
-        if not is_off_topic_story(item.title, item.summary or item.description)
+def list_articles(
+    page: int = 1,
+    page_size: int = 12,
+    q: str | None = None,
+    category_id: int | None = None,
+    country_id: int | None = None,
+    region_id: int | None = None,
+    source_id: int | None = None,
+    db: Session = Depends(get_db),
+) -> dict:
+    page = max(page, 1)
+    page_size = max(1, min(page_size, 100))
+
+    query = db.query(Article)
+    if q and q.strip():
+        term = f"%{q.strip()}%"
+        category_match = (
+            db.query(ArticleCategory.article_id)
+            .join(Category, Category.id == ArticleCategory.category_id)
+            .filter(Category.name.ilike(term))
+        )
+        query = query.filter(
+            or_(
+                Article.title.ilike(term),
+                Article.summary.ilike(term),
+                Article.description.ilike(term),
+                Article.id.in_(category_match),
+            )
+        )
+    if category_id is not None:
+        query = query.filter(
+            Article.id.in_(db.query(ArticleCategory.article_id).filter(ArticleCategory.category_id == category_id))
+        )
+    if country_id is not None:
+        query = query.filter(Article.country_id == country_id)
+    if region_id is not None:
+        query = query.filter(Article.region_id == region_id)
+    if source_id is not None:
+        query = query.filter(Article.source_id == source_id)
+
+    # Off-topic filtering runs in Python, so only the id and text columns are loaded for the whole result set.
+    candidates = query.with_entities(Article.id, Article.title, Article.summary, Article.description).order_by(
+        Article.published_at.desc().nullslast(), Article.collected_at.desc()
+    ).all()
+    ordered_ids = [
+        row.id
+        for row in candidates
+        if not is_off_topic_story(row.title, row.summary or row.description)
     ]
+
+    start = (page - 1) * page_size
+    page_ids = ordered_ids[start:start + page_size]
+    by_id = {article.id: article for article in db.query(Article).filter(Article.id.in_(page_ids)).all()} if page_ids else {}
+    return {
+        "items": _serialize_articles(db, [by_id[article_id] for article_id in page_ids]),
+        "total": len(ordered_ids),
+        "page": page,
+        "page_size": page_size,
+    }
 
 
 @router.get("/articles/{article_id}")

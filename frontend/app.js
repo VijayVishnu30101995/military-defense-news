@@ -1074,6 +1074,7 @@ document.addEventListener('click', (e) => {
   document.querySelector('.command-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
 });
 
+document.getElementById('togglePassword').addEventListener('click', () => {
   const isPassword = passwordInput.type === 'password';
   passwordInput.type = isPassword ? 'text' : 'password';
   document.getElementById('togglePassword').textContent = isPassword ? '🙈' : '👁';

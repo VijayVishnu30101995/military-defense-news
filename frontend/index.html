@@ -113,51 +113,28 @@
               </div>
             </div>
 
-            <div class="stats-grid" id="statsGrid"></div>
-
             <div class="board">
               <section class="board-main command-grid">
                 <article class="card command-panel">
-                  <div class="card-header split">
-                    <div>
-                      <p class="eyebrow">Search</p>
-                      <h2>Intel filters</h2>
+                  <form id="articleFilterForm" class="filter-toolbar" role="search">
+                    <input id="searchInput" class="toolbar-search" type="search" placeholder="Search stories, keywords, summaries" aria-label="Search stories" />
+                    <div class="filter-selects">
+                      <select id="countryFilter" aria-label="Country">
+                        <option value="">All countries</option>
+                      </select>
+                      <select id="regionFilter" aria-label="Region">
+                        <option value="">All regions</option>
+                      </select>
+                      <select id="sourceFilter" aria-label="Source">
+                        <option value="">All sources</option>
+                      </select>
                     </div>
                     <button id="resetFiltersBtn" class="secondary" type="button">Reset</button>
-                  </div>
-
-                  <form id="articleFilterForm" class="filter-form">
-                    <label class="search-field">
-                      Search stories
-                      <input id="searchInput" type="text" placeholder="Search titles, keywords, or summaries" />
-                    </label>
-                    <div class="filter-row filter-row-4">
-                      <label>
-                        Category
-                        <select id="categoryFilter">
-                          <option value="">All categories</option>
-                        </select>
-                      </label>
-                      <label>
-                        Country
-                        <select id="countryFilter">
-                          <option value="">All countries</option>
-                        </select>
-                      </label>
-                      <label>
-                        Region
-                        <select id="regionFilter">
-                          <option value="">All regions</option>
-                        </select>
-                      </label>
-                      <label>
-                        Source
-                        <select id="sourceFilter">
-                          <option value="">All sources</option>
-                        </select>
-                      </label>
-                    </div>
+                    <select id="categoryFilter" class="hidden" aria-label="Category">
+                      <option value="">All categories</option>
+                    </select>
                   </form>
+                  <div id="categoryChips" class="category-chips" role="group" aria-label="Filter by category"></div>
 
                   <div class="results-header">
                     <h3>Filtered coverage</h3>
@@ -198,6 +175,8 @@
 
               </aside>
             </div>
+
+            <div class="stats-grid" id="statsGrid"></div>
           </div>
 
           <div id="sourceView" class="view-panel hidden admin-only">

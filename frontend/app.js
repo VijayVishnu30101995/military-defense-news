@@ -18,6 +18,7 @@ const newsletterPanel = document.getElementById('newsletterPanel');
 const generateBriefBtn = document.getElementById('generateBriefBtn');
 const searchInput = document.getElementById('searchInput');
 const categoryFilter = document.getElementById('categoryFilter');
+const categoryChips = document.getElementById('categoryChips');
 const countryFilter = document.getElementById('countryFilter');
 const regionFilter = document.getElementById('regionFilter');
 const sourceFilter = document.getElementById('sourceFilter');
@@ -313,7 +314,7 @@ function renderLead(items) {
   const preferred = items.findIndex((item) => item.image_url);
   const leadIndex = preferred >= 0 ? preferred : 0;
   const lead = items[leadIndex];
-  const rest = items.filter((_, index) => index !== leadIndex).slice(0, 3);
+  const rest = items.filter((_, index) => index !== leadIndex).slice(0, 2);
 
   const when = (item) => (item.published_at
     ? new Date(item.published_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
@@ -489,6 +490,7 @@ function renderFilterSelects() {
   fill(countryFilter, state.countries, 'All countries');
   fill(regionFilter, state.regions, 'All regions');
   fill(sourceFilter, state.sources, 'All sources');
+  renderCategoryChips();
 }
 
 function formatSourceStatus(source) {
@@ -879,8 +881,32 @@ async function loadReferenceData() {
 
 let articleRequestId = 0;
 
+function renderCategoryChips() {
+  const chips = [{ id: '', name: 'All' }, ...state.categories];
+  categoryChips.innerHTML = chips.map((item) =>
+    `<button type="button" class="chip" data-category="${escapeHtml(item.id)}">${escapeHtml(item.name)}</button>`
+  ).join('');
+  syncCategoryChips();
+}
+
+function syncCategoryChips() {
+  categoryChips.querySelectorAll('[data-category]').forEach((btn) => {
+    const active = btn.dataset.category === String(categoryFilter.value);
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-pressed', String(active));
+  });
+}
+
+categoryChips.addEventListener('click', (event) => {
+  const chip = event.target.closest('[data-category]');
+  if (!chip) return;
+  categoryFilter.value = chip.dataset.category;
+  loadArticles();
+});
+
 async function loadArticles(page = 1) {
   const requestId = ++articleRequestId;
+  syncCategoryChips();
   const params = new URLSearchParams({ page: String(page), page_size: String(PAGE_SIZE) });
   const search = searchInput.value.trim();
   if (search) params.set('q', search);

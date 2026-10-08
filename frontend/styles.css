@@ -1929,3 +1929,9 @@ button.close-modal:hover { border-color: var(--accent); color: var(--accent); }
 .password-field input { flex: 1; padding-right: 2.4rem; }
 .eye-btn { position: absolute; right: 0; top: 0; bottom: 0; background: none; border: none; cursor: pointer; padding: 0 0.6rem; font-size: 1rem; color: var(--text-muted, #888); }
 .eye-btn:hover { color: var(--text, #fff); }
+
+.login-error { display: flex; align-items: center; gap: 0.5rem; padding: 0.6rem 0.85rem; border-radius: 4px; background: rgba(220,38,38,0.12); border: 1px solid rgba(220,38,38,0.4); color: #f87171; font-size: 0.82rem; letter-spacing: 0.02em; margin-bottom: 0.25rem; }
+.login-error::before { content: '⚠'; font-size: 0.9rem; flex-shrink: 0; }
+.login-error.hidden { display: none; }
+@keyframes shake { 0%,100%{transform:translateX(0)} 20%{transform:translateX(-6px)} 40%{transform:translateX(6px)} 60%{transform:translateX(-4px)} 80%{transform:translateX(4px)} }
+.shake { animation: shake 0.4s ease; }

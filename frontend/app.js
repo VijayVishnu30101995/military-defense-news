@@ -858,7 +858,11 @@ async function login(event) {
 
     setToken(result.access_token);
   } catch (error) {
-    alert(`Login failed: ${error.message}`);
+    const el = document.getElementById('loginError');
+    el.textContent = 'Invalid email or password. Please try again.';
+    el.classList.remove('hidden');
+    loginForm.classList.add('shake');
+    loginForm.addEventListener('animationend', () => loginForm.classList.remove('shake'), { once: true });
     return;
   }
 
@@ -1046,6 +1050,9 @@ document.getElementById('togglePassword').addEventListener('click', () => {
   passwordInput.type = isPassword ? 'text' : 'password';
   document.getElementById('togglePassword').textContent = isPassword ? '🙈' : '👁';
 });
+[emailInput, passwordInput].forEach(el => el.addEventListener('input', () => {
+  document.getElementById('loginError').classList.add('hidden');
+}));
 loginForm.addEventListener('submit', login);
 logoutBtn.addEventListener('click', logout);
 generateBriefBtn.addEventListener('click', generateBrief);

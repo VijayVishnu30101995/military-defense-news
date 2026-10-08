@@ -261,10 +261,10 @@ The UI went through multiple iterations because the user repeatedly refined the 
 
 ## 7. Demo credentials
 
-Seeded demo account:
+The admin account is created on startup from environment variables:
 
-- Email: `admin@defensebrief.com`
-- Password: `Defence123!`
+- `ADMIN_EMAIL` (defaults to `admin@defensebrief.com`)
+- `ADMIN_PASSWORD` (required; setting it to a new value resets the admin password on the next restart)
 
 ## 8. Local run instructions
 

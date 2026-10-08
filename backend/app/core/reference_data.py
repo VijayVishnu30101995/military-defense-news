@@ -1,6 +1,7 @@
 from sqlalchemy.orm import Session
 
-from app.core.security import hash_password
+from app.config import settings
+from app.core.security import hash_password, verify_password
 from app.models.category import Category
 from app.models.country import Country
 from app.models.region import Region
@@ -43,9 +44,6 @@ DEFAULT_CATEGORIES = [
     ("Military Exercises", "military-exercises", "Exercises, drills, and joint operations."),
     ("Geopolitics", "geopolitics", "Strategic, diplomatic, and geopolitical developments."),
 ]
-
-DEFAULT_ADMIN_EMAIL = "admin@defensebrief.com"
-DEFAULT_ADMIN_PASSWORD = "Defence123!"
 
 DEFAULT_SOURCES = [
     (
@@ -173,16 +171,26 @@ def ensure_reference_data(db: Session) -> None:
                 )
             )
 
-    existing_admin = db.query(User).filter(User.email == DEFAULT_ADMIN_EMAIL).first()
-    if existing_admin is None:
+    ensure_admin_user(db)
+
+    db.commit()
+
+
+def ensure_admin_user(db: Session) -> None:
+    # ADMIN_PASSWORD is the source of truth: setting it creates the admin or resets its password on startup.
+    if not settings.admin_password:
+        return
+
+    admin = db.query(User).filter(User.email == settings.admin_email).first()
+    if admin is None:
         db.add(
             User(
-                email=DEFAULT_ADMIN_EMAIL,
-                password_hash=hash_password(DEFAULT_ADMIN_PASSWORD),
+                email=settings.admin_email,
+                password_hash=hash_password(settings.admin_password),
                 display_name="Defense Brief Admin",
                 role=ROLE_ADMIN,
                 is_active=True,
             )
         )
-
-    db.commit()
+    elif not verify_password(settings.admin_password, admin.password_hash):
+        admin.password_hash = hash_password(settings.admin_password)

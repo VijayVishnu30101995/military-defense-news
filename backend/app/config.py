@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./app.db"
     secret_key: str = "development-secret-key-change-me"
 
+    admin_email: str = "admin@defensebrief.com"
+    admin_password: str | None = None
+
     news_timezone: str = "Asia/Kolkata"
 
     smtp_host: str | None = None

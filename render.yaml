@@ -12,6 +12,8 @@ services:
         sync: false
       - key: SECRET_KEY
         generateValue: true
+      - key: ADMIN_PASSWORD
+        sync: false
       - key: APP_ENV
         value: production
       - key: NEWS_TIMEZONE

@@ -1289,6 +1289,27 @@ if (triggerHealthBtn) {
   });
 }
 
+const clearNewsBtn = document.getElementById('clearNewsBtn');
+if (clearNewsBtn) {
+  clearNewsBtn.addEventListener('click', async () => {
+    if (!confirm('Delete ALL articles and newsletters? This cannot be undone.')) return;
+    clearNewsBtn.disabled = true;
+    const orig = clearNewsBtn.textContent;
+    clearNewsBtn.textContent = 'Clearing...';
+    try {
+      const res = await apiFetch('/articles', { method: 'DELETE' });
+      const data = await res.json();
+      alert(`Cleared ${data.deleted_articles} articles and ${data.deleted_newsletters} newsletters.`);
+      await loadDashboard();
+    } catch (e) {
+      alert(`Failed to clear news: ${e.message || e}`);
+    } finally {
+      clearNewsBtn.textContent = orig;
+      clearNewsBtn.disabled = false;
+    }
+  });
+}
+
 // Inline popover helper: shows brief health summary next to the clicked button
 function showSourceHealthPopover(buttonEl, health) {
   // Remove any existing popover

@@ -229,6 +229,16 @@ def get_related_articles(article_id: int, limit: int = 4, db: Session = Depends(
     return [_serialize_article(db, article) for article in _related_articles(db, {article_id}, limit)]
 
 
+@router.delete("/articles", dependencies=[Depends(require_admin)])
+def clear_all_articles(db: Session = Depends(get_db)) -> dict:
+    # Newsletters and their join rows cascade-delete when articles go; clear newsletters first
+    # so their FK to articles is gone, then bulk-delete articles (which cascade article_categories).
+    deleted_newsletters = db.query(Newsletter).delete(synchronize_session=False)
+    deleted_articles = db.query(Article).delete(synchronize_session=False)
+    db.commit()
+    return {"deleted_articles": deleted_articles, "deleted_newsletters": deleted_newsletters}
+
+
 @router.get("/newsletters/{newsletter_id}")
 def get_newsletter(newsletter_id: int, db: Session = Depends(get_db)) -> dict:
     newsletter = db.query(Newsletter).filter(Newsletter.id == newsletter_id).first()

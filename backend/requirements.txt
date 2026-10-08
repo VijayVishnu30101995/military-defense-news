@@ -33,3 +33,7 @@ pwdlib[argon2]==0.3.1
 APScheduler==3.10.4
 
 reportlab==5.0.1
+googlenewsdecoder==0.1.7
+selectolax==0.4.13
+requests==2.34.2
+PySocks==1.7.1

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
+import json
 import re
 from urllib import request
 from urllib.parse import urljoin, urlparse
 from xml.etree import ElementTree
 
+from googlenewsdecoder import gnewsdecoder
 from sqlalchemy.orm import Session
 
 from app.core.content_filters import score_defense_relevance
@@ -33,6 +36,16 @@ JUNK_IMAGE_PATTERN = re.compile(
 # Dimensions advertised in the URL itself, e.g. .../photo-320x180.jpg or ?w=120&h=90
 _URL_DIMENSIONS = re.compile(r"(?:[-_/](\d{2,4})x(\d{2,4})[._-])|(?:[?&](?:w|width)=(\d{2,4}))", re.IGNORECASE)
 IMAGE_MIN_EDGE = 320
+# news.google.com item links are redirects; the decoder makes network calls with no timeout
+# of its own, so each decode runs in a worker thread that the collector can give up on.
+GOOGLE_NEWS_DECODE_TIMEOUT_SECONDS = 20
+_google_news_decoder_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="gnews-decode")
+JSON_LD_PATTERN = re.compile(
+    r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', re.IGNORECASE | re.DOTALL
+)
+# Only nodes describing the story itself; breadcrumbs, organisations and "related" widgets
+# carry images that belong to other pages.
+ARTICLE_TYPE_PATTERN = re.compile(r"Article|Posting", re.IGNORECASE)
 
 ATOM_NS = "http://www.w3.org/2005/Atom"
 CONTENT_NS = "http://purl.org/rss/1.0/modules/content/"
@@ -62,6 +75,60 @@ CATEGORY_PATTERNS = {
                         r"ceasefire", r"treaty", r"alliances?", r"tensions?", r"minister", r"talks"],
     }.items()
 }
+
+
+def _decode_google_news_url(article_url: str) -> str | None:
+    """Return the publisher's own article URL behind a Google News link, or None."""
+    future = _google_news_decoder_pool.submit(gnewsdecoder, article_url, interval=1)
+    try:
+        result = future.result(timeout=GOOGLE_NEWS_DECODE_TIMEOUT_SECONDS)
+    except Exception:
+        return None
+    if not result.get("status"):
+        return None
+    decoded = result.get("decoded_url")
+    if not decoded or urlparse(decoded).scheme not in ("http", "https"):
+        return None
+    if urlparse(decoded).netloc.endswith("news.google.com"):
+        return None
+    return decoded
+
+
+def _json_ld_nodes(data):
+    """Yield every object in a JSON-LD document, including nested @graph entries."""
+    if isinstance(data, list):
+        for item in data:
+            yield from _json_ld_nodes(item)
+    elif isinstance(data, dict):
+        yield data
+        yield from _json_ld_nodes(data.get("@graph"))
+
+
+def _json_ld_image_urls(value) -> list[str]:
+    """JSON-LD `image` may be a URL, an ImageObject, or a list of either."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return _json_ld_image_urls(value.get("url") or value.get("contentUrl"))
+    if isinstance(value, list):
+        return [url for entry in value for url in _json_ld_image_urls(entry)]
+    return []
+
+
+def _json_ld_article_images(html: str) -> list[str]:
+    images: list[str] = []
+    for block in JSON_LD_PATTERN.findall(html):
+        try:
+            data = json.loads(block.strip())
+        except ValueError:
+            continue
+        for node in _json_ld_nodes(data):
+            node_types = node.get("@type")
+            node_types = [node_types] if isinstance(node_types, str) else node_types or []
+            if not any(isinstance(t, str) and ARTICLE_TYPE_PATTERN.search(t) for t in node_types):
+                continue
+            images.extend(_json_ld_image_urls(node.get("image")))
+    return images
 
 
 class SourceCollectorService:
@@ -217,7 +284,17 @@ class SourceCollectorService:
         return cleaned
 
     @staticmethod
-    def _extract_image_from_html(html: str | None, fallback_base_url: str | None = None) -> str | None:
+    def _extract_image_from_html(
+        html: str | None,
+        fallback_base_url: str | None = None,
+        include_inline: bool = True,
+    ) -> str | None:
+        """Return the article's own lead image from its page.
+
+        Metadata (og/twitter/JSON-LD) describes the article itself. The bare <img> scan
+        only guesses at it, so callers that have a feed image can skip it with
+        include_inline=False and fall back to it only when nothing else exists.
+        """
         if not html:
             return None
 
@@ -226,25 +303,40 @@ class SourceCollectorService:
             r'<meta[^>]+name=["\']twitter:image["\'][^>]+content=["\']([^"\']+)["\']',
             r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']',
             r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+name=["\']twitter:image["\']',
-            r'<img[^>]+src=["\']([^"\']+)["\']',
         ]
 
         for pattern in patterns:
-            # The bare <img> pattern is last and matches site furniture as readily as
-            # article art, so every candidate goes through the junk screen.
             for match in re.finditer(pattern, html, flags=re.IGNORECASE | re.DOTALL):
                 usable = SourceCollectorService._usable_image_url(match.group(1), fallback_base_url)
                 if usable:
                     return usable
+
+        for image in _json_ld_article_images(html):
+            usable = SourceCollectorService._usable_image_url(image, fallback_base_url)
+            if usable:
+                return usable
+
+        if not include_inline:
+            return None
+
+        for match in re.finditer(r'<img[^>]+src=["\']([^"\']+)["\']', html, flags=re.IGNORECASE | re.DOTALL):
+            # The bare <img> scan matches site furniture as readily as article art, so
+            # every candidate goes through the junk screen.
+            usable = SourceCollectorService._usable_image_url(match.group(1), fallback_base_url)
+            if usable:
+                return usable
         return None
 
-    def _resolve_article_image(self, article_url: str | None, fallback_base_url: str | None = None) -> str | None:
+    def _fetch_article_html(self, article_url: str | None) -> str | None:
         if not article_url:
             return None
 
-        # Google News links are redirect pages whose og:image is Google's own logo.
+        # Google News links are redirect pages whose og:image is Google's own logo, so
+        # fetch the publisher's article they point to instead.
         if urlparse(article_url).netloc.endswith("news.google.com"):
-            return None
+            article_url = _decode_google_news_url(article_url)
+            if not article_url:
+                return None
 
         try:
             req = request.Request(
@@ -259,10 +351,51 @@ class SourceCollectorService:
                 content_type = response.headers.get_content_type()
                 if content_type != "text/html" and "xml" not in content_type:
                     return None
-                html = response.read().decode("utf-8", errors="ignore")
-                return self._extract_image_from_html(html, fallback_base_url=fallback_base_url or article_url)
+                return response.read().decode("utf-8", errors="ignore")
         except Exception:
             return None
+
+    def _best_article_image(self, article_url: str, item: dict, source: Source) -> str | None:
+        """Pick the image shown for a story: the article's own lead image first.
+
+        Feed thumbnails are often a section or category graphic shared across many
+        stories, so they only win when the article page offers nothing usable.
+        """
+        html = self._fetch_article_html(article_url)
+        base = source.website_url
+        return (
+            self._extract_image_from_html(html, fallback_base_url=base or article_url, include_inline=False)
+            or item.get("image_url")
+            or self._extract_image_from_html(html, fallback_base_url=base or article_url, include_inline=True)
+        )
+
+    def refresh_article_images(self, limit: int = 200) -> int:
+        """Re-resolve images for stored articles whose picture came from the feed.
+
+        Articles collected before the article page was preferred keep the feed
+        thumbnail. Returns how many rows changed.
+        """
+        candidates = (
+            self.db.query(Article)
+            .filter(Article.original_url.isnot(None))
+            .order_by(Article.published_at.desc().nullslast())
+            .limit(limit)
+            .all()
+        )
+        changed = 0
+        for article in candidates:
+            source = self.db.query(Source).filter(Source.id == article.source_id).first()
+            html = self._fetch_article_html(article.original_url)
+            new_image = self._extract_image_from_html(
+                html,
+                fallback_base_url=(source.website_url if source else None) or article.original_url,
+                include_inline=False,
+            )
+            if new_image and new_image != article.image_url:
+                article.image_url = new_image
+                changed += 1
+        self.db.commit()
+        return changed
 
     def _find_feed_items(self, root: ElementTree.Element, fallback_base_url: str | None = None) -> list[dict]:
         items = []
@@ -439,7 +572,6 @@ class SourceCollectorService:
             relevance = score_defense_relevance(title, item.get("summary"), item.get("body"))
 
             normalized_url = ArticleRepository.normalize_url(link)
-            image_url = item.get("image_url") or self._resolve_article_image(link, fallback_base_url=source.website_url)
             duplicate = self.article_repository.find_duplicate(
                 source_id=source_id,
                 title=title,
@@ -448,13 +580,17 @@ class SourceCollectorService:
             )
             if duplicate is not None:
                 # Replace a stored logo or tracking pixel, not just a missing picture;
-                # older rows were populated before the junk screen existed.
-                if image_url and (
+                # older rows were populated before the junk screen existed. Articles that
+                # already have a usable picture are left alone so each collection run does
+                # not re-download every story page (see refresh_article_images for those).
+                if (
                     not duplicate.image_url
                     or JUNK_IMAGE_PATTERN.search(duplicate.image_url)
                     or duplicate.image_url.startswith("http://")
                 ):
-                    duplicate.image_url = image_url
+                    image_url = self._best_article_image(link, item, source)
+                    if image_url:
+                        duplicate.image_url = image_url
                 if not duplicate.summary and item.get("summary"):
                     duplicate.summary = item.get("summary")
                 if not duplicate.description and item.get("summary"):
@@ -472,6 +608,7 @@ class SourceCollectorService:
                 self.db.commit()
                 continue
 
+            image_url = self._best_article_image(link, item, source)
             article_data = ArticleCreate(
                 source_id=source_id,
                 title=title,

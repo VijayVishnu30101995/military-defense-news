@@ -13,7 +13,7 @@ const themeToggleBtn = document.getElementById('themeToggleBtn');
 const navTabs = document.querySelectorAll('.nav-tab');
 const statsGrid = document.getElementById('statsGrid');
 const topDevelopments = document.getElementById('topDevelopments');
-const latestNews = document.getElementById('latestNews');
+const leadGrid = document.getElementById('leadGrid');
 const newsletterPanel = document.getElementById('newsletterPanel');
 const generateBriefBtn = document.getElementById('generateBriefBtn');
 const searchInput = document.getElementById('searchInput');
@@ -47,7 +47,9 @@ const categoryImages = {
   Land: 'https://images.unsplash.com/photo-1529107386315-e1a2ed48a620?auto=format&fit=crop&w=900&q=80',
   Cyber: 'https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=900&q=80',
   Space: 'https://images.unsplash.com/photo-1446776811953-b23d57bd21aa?auto=format&fit=crop&w=900&q=80',
-  Drones: 'https://images.unsplash.com/photo-1523237041428-3a50e14a8bdd?auto=format&fit=crop&w=900&q=80',
+  Drones: 'https://images.unsplash.com/photo-1527977966376-1c8408f9f108?auto=format&fit=crop&w=900&q=80',
+  'Defense Technology': 'https://images.unsplash.com/photo-1550751827-4bd374c3f58b?auto=format&fit=crop&w=900&q=80',
+  'Military Exercises': 'https://images.unsplash.com/photo-1529107386315-e1a2ed48a620?auto=format&fit=crop&w=900&q=80',
   Procurement: 'https://images.unsplash.com/photo-1552664730-d307ca884978?auto=format&fit=crop&w=900&q=80',
   Geopolitics: 'https://images.unsplash.com/photo-1521295121783-8a321d551ad2?auto=format&fit=crop&w=900&q=80',
   Default: 'https://images.unsplash.com/photo-1534796636912-3b95b3ab5986?auto=format&fit=crop&w=900&q=80',
@@ -104,6 +106,29 @@ function cssUrl(value) {
 function getCategoryImage(categories) {
   const category = Array.isArray(categories) && categories.length ? categories[0] : 'Default';
   return categoryImages[category] || categoryImages.Default;
+}
+
+function imageHtml(url, categories, className = '') {
+  const fallback = getCategoryImage(categories);
+  const src = url || fallback;
+  return `<img class="${className}" src="${escapeHtml(src)}" data-fallback="${escapeHtml(fallback)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">`;
+}
+
+// Swap a broken picture for its category photo once, then fall back to the placeholder tint.
+document.addEventListener('error', (event) => {
+  const img = event.target;
+  if (!(img instanceof HTMLImageElement)) return;
+  if (img.dataset.fallback && img.getAttribute('src') !== img.dataset.fallback) {
+    img.src = img.dataset.fallback;
+    img.dataset.fallback = '';
+  } else {
+    img.classList.add('img-failed');
+  }
+}, true);
+
+function getSourceName(id) {
+  const match = state.sources.find((item) => Number(item.id) === Number(id));
+  return match ? match.name : '';
 }
 
 function isAdmin() {
@@ -272,8 +297,43 @@ function renderSourceAlerts(healthList) {
   }
 }
 function summarizeText(value) {
-  const text = String(value ?? 'No summary available.');
+  const text = String(value ?? 'No summary available.').replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim() || 'No summary available.';
   return text.length > 170 ? `${text.slice(0, 170).trim()}...` : text;
+}
+
+function renderLead(items) {
+  if (!leadGrid) return;
+  if (!items || !items.length) {
+    leadGrid.classList.add('hidden');
+    return;
+  }
+  leadGrid.classList.remove('hidden');
+
+  const preferred = items.findIndex((item) => item.image_url);
+  const leadIndex = preferred >= 0 ? preferred : 0;
+  const lead = items[leadIndex];
+  const rest = items.filter((_, index) => index !== leadIndex).slice(0, 3);
+
+  const when = (item) => (item.published_at
+    ? new Date(item.published_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+    : 'Today');
+  const tag = (item) => (Array.isArray(item.categories) && item.categories.length ? item.categories[0] : 'Defense');
+  const meta = (item) => [getSourceName(item.source_id), when(item)].filter(Boolean).map(escapeHtml).join(' · ');
+
+  const card = (item, className) => `
+    <article class="lead-card ${className}" data-open-article="${item.id}" tabindex="0" role="button" aria-label="Open brief: ${escapeHtml(item.title)}">
+      ${imageHtml(item.image_url, item.categories, 'lead-img')}
+      <div class="lead-shade"></div>
+      <div class="lead-text">
+        <span class="story-tag lead-tag">${escapeHtml(tag(item))}</span>
+        <h3>${escapeHtml(item.title)}</h3>
+        ${className === 'lead-main' ? `<p>${escapeHtml(summarizeText(item.summary || item.description || ''))}</p>` : ''}
+        <span class="lead-meta">${meta(item)}</span>
+      </div>
+    </article>
+  `;
+
+  leadGrid.innerHTML = card(lead, 'lead-main') + `<div class="lead-side">${rest.map((item) => card(item, 'lead-small')).join('')}</div>`;
 }
 
 function renderNewsList(container, items) {
@@ -286,10 +346,9 @@ function renderNewsList(container, items) {
     const summary = item.summary || item.description || 'No summary available.';
     const primaryCategory = Array.isArray(item.categories) && item.categories.length ? item.categories[0] : 'Defense';
     const publishedValue = item.published_at ? new Date(item.published_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : 'Today';
-    const imageUrl = item.image_url || getCategoryImage(item.categories);
     return `
       <article class="news-item">
-        <div class="news-thumb" style="background-image: url('${cssUrl(imageUrl)}')"></div>
+        <div class="news-thumb">${imageHtml(item.image_url, item.categories)}</div>
         <div class="news-body">
           <div class="story-meta">
             <span class="story-tag">${escapeHtml(primaryCategory)}</span>
@@ -366,13 +425,54 @@ function renderNewsletter(newsletter) {
         <ul>${items || '<li>No article highlights available.</li>'}</ul>
       </div>
       <div class="newsletter-actions">
-        <a href="http://localhost:8001/api/v1/newsletters/${newsletter.id}/pdf" target="_blank" rel="noreferrer">
-          <button type="button" class="secondary">Download PDF</button>
-        </a>
+        <button type="button" class="secondary" data-download-pdf="${newsletter.id}">Download PDF</button>
       </div>
     </div>
   `;
 }
+
+async function downloadNewsletterPdf(newsletterId, button) {
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Preparing...';
+
+  try {
+    // A plain link can't send the Bearer token, so fetch the file and save the blob.
+    const response = await fetch(`${API_BASE}/newsletters/${newsletterId}/pdf`, {
+      headers: { Authorization: `Bearer ${getToken()}` },
+    });
+    if (response.status === 401) {
+      logout();
+      return;
+    }
+    if (!response.ok) {
+      throw new Error((await response.text()) || 'Request failed');
+    }
+
+    const disposition = response.headers.get('content-disposition') || '';
+    const filename = /filename="?([^";]+)"?/.exec(disposition)?.[1] || `defense-brief-${newsletterId}.pdf`;
+    const url = URL.createObjectURL(await response.blob());
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  } catch (error) {
+    alert(`Unable to download PDF: ${error.message}`);
+  } finally {
+    button.disabled = false;
+    button.textContent = label;
+  }
+}
+
+newsletterPanel.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-download-pdf]');
+  if (button) {
+    downloadNewsletterPdf(Number(button.dataset.downloadPdf), button);
+  }
+});
 
 function renderFilterSelects() {
   const fill = (select, items, label) => {
@@ -461,7 +561,6 @@ function renderArticleResults(items) {
 
   articleResults.innerHTML = cleanItems.map((article) => {
     const categories = Array.isArray(article.categories) && article.categories.length ? article.categories : ['Defense'];
-    const articleImage = article.image_url || getCategoryImage(categories);
     const summary = article.summary || article.description || 'No summary available.';
     const published = article.published_at ? new Date(article.published_at).toLocaleDateString(undefined, {
       month: 'short',
@@ -471,7 +570,10 @@ function renderArticleResults(items) {
 
     return `
       <article class="article-card" data-article-id="${article.id}">
-        <div class="article-card-image" style="background-image: url('${cssUrl(articleImage)}')"></div>
+        <div class="article-card-image">
+          ${imageHtml(article.image_url, categories)}
+          ${getSourceName(article.source_id) ? `<span class="card-source">${escapeHtml(getSourceName(article.source_id))}</span>` : ''}
+        </div>
         <div class="article-card-body">
           <div class="chip-row">
             ${categories.slice(0, 3).map((category) => `<span class="story-tag">${escapeHtml(category)}</span>`).join('')}
@@ -504,12 +606,13 @@ function openArticleDetail(articleId) {
       const keyPoints = parseKeyPoints(article.key_points || article.summary || '');
       const meta = [
         article.published_at ? `Published ${new Date(article.published_at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}` : 'Published recently',
-        `Source ID ${article.source_id}`,
+        getSourceName(article.source_id) || `Source ID ${article.source_id}`,
         article.importance_score ? `Importance ${article.importance_score}` : 'Importance unscored',
       ];
 
       articleDetailContent.innerHTML = `
-        <div class="article-detail-hero" style="background-image: url('${cssUrl(article.image_url || getCategoryImage(categories))}')">
+        <div class="article-detail-hero">
+          ${imageHtml(article.image_url, categories, 'hero-img')}
           <div class="article-detail-overlay">
             <p class="eyebrow">Briefing note</p>
             <h3 id="articleDetailTitle">${escapeHtml(article.title)}</h3>
@@ -720,7 +823,7 @@ async function loadDashboard() {
     const dashboard = await api('/dashboard');
     renderStats(dashboard);
     renderNewsList(topDevelopments, dashboard.top_developments || dashboard.important_articles || []);
-    renderNewsList(latestNews, dashboard.latest_news || dashboard.latest_articles || []);
+    renderLead(dashboard.latest_news || dashboard.latest_articles || []);
 
     const seen = new Set();
     const tickerItems = [
@@ -1297,6 +1400,19 @@ document.addEventListener('click', (event) => {
   const switchButton = event.target.closest('[data-view-switch]');
   if (switchButton) {
     showView(switchButton.dataset.viewSwitch);
+  }
+});
+
+leadGrid.addEventListener('click', (event) => {
+  const card = event.target.closest('[data-open-article]');
+  if (card) openArticleDetail(Number(card.dataset.openArticle));
+});
+leadGrid.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter' && event.key !== ' ') return;
+  const card = event.target.closest('[data-open-article]');
+  if (card) {
+    event.preventDefault();
+    openArticleDetail(Number(card.dataset.openArticle));
   }
 });
 

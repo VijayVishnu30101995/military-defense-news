@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user, require_admin
-from app.core.content_filters import is_sports_story
+from app.core.content_filters import is_off_topic_story
 from app.database import get_db
 from app.models.article import Article
 from app.models.article_category import ArticleCategory
@@ -16,6 +16,7 @@ from app.models.newsletter import Newsletter
 from app.models.newsletter_article import NewsletterArticle
 from app.models.region import Region
 from app.models.source import Source
+from app.services.newsletter_pdf import PdfArticle, PdfNewsletter, build_newsletter_pdf
 
 router = APIRouter(
     prefix="",
@@ -70,7 +71,7 @@ def get_dashboard(db: Session = Depends(get_db)) -> dict:
     articles = [
         article
         for article in articles
-        if not is_sports_story(article.title, article.summary or article.description)
+        if not is_off_topic_story(article.title, article.summary or article.description)
     ]
     total_news = len(articles)
     important_news = sum(
@@ -162,14 +163,14 @@ def list_articles(db: Session = Depends(get_db)) -> list[dict]:
     return [
         _serialize_article(db, item)
         for item in items
-        if not is_sports_story(item.title, item.summary or item.description)
+        if not is_off_topic_story(item.title, item.summary or item.description)
     ]
 
 
 @router.get("/articles/{article_id}")
 def get_article(article_id: int, db: Session = Depends(get_db)) -> dict:
     article = db.query(Article).filter(Article.id == article_id).first()
-    if article is None or is_sports_story(article.title, article.summary or article.description):
+    if article is None or is_off_topic_story(article.title, article.summary or article.description):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Article not found")
     return _serialize_article(db, article)
 
@@ -190,7 +191,7 @@ def get_newsletter(newsletter_id: int, db: Session = Depends(get_db)) -> dict:
     article_rows = [
         article
         for article in article_rows
-        if not is_sports_story(article.title, article.summary or article.description)
+        if not is_off_topic_story(article.title, article.summary or article.description)
     ]
 
     return {
@@ -218,7 +219,7 @@ def generate_newsletter(db: Session = Depends(get_db)) -> dict:
         article_candidates = [
             article
             for article in article_candidates
-            if not is_sports_story(article.title, article.summary or article.description)
+            if not is_off_topic_story(article.title, article.summary or article.description)
         ][:5]
 
         newsletter = Newsletter(
@@ -257,40 +258,60 @@ def download_newsletter_pdf(newsletter_id: int, db: Session = Depends(get_db)) -
         .join(NewsletterArticle, NewsletterArticle.article_id == Article.id)
         .filter(NewsletterArticle.newsletter_id == newsletter.id)
         .order_by(NewsletterArticle.position.asc())
-        .limit(10)
         .all()
     )
     article_rows = [
         article
         for article in article_rows
-        if not is_sports_story(article.title, article.summary or article.description)
+        if not is_off_topic_story(article.title, article.summary or article.description)
     ]
 
-    lines = [
-        "BT /F1 20 Tf 72 760 Td (Defense Brief) Tj ET",
-        f"BT /F1 12 Tf 72 732 Td ({newsletter.title}) Tj ET",
-    ]
-    y = 700
-    for article in article_rows:
-        title = (article.title or "Untitled").replace("(", "\\(").replace(")", "\\)")
-        lines.append(f"BT /F1 11 Tf 72 {y} Td ({title}) Tj ET")
-        y -= 24
-        if y < 90:
-            break
-
-    pdf_text = "".join(
-        [
-            "%PDF-1.4\n",
-            "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
-            "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
-            "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n",
-            "4 0 obj\n<< /Length 200 >>\nstream\n",
-            *[f"{line}\n" for line in lines],
-            "endstream\nendobj\n",
-            "5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n",
-            "xref\n0 6\n0000000000 65535 f \n",
-            "trailer\n<< /Root 1 0 R /Size 6 >>\nstartxref\n0\n%%EOF\n",
-        ]
+    source_names = dict(
+        db.query(Source.id, Source.name)
+        .filter(Source.id.in_({article.source_id for article in article_rows}))
+        .all()
     )
-    pdf_bytes = pdf_text.encode("latin-1", errors="replace")
-    return Response(content=pdf_bytes, media_type="application/pdf")
+
+    pdf_articles = []
+    for position, article in enumerate(article_rows, start=1):
+        key_points = [
+            line.lstrip("-* ").strip()
+            for line in (article.key_points or "").splitlines()
+            if line.strip()
+        ]
+        pdf_articles.append(
+            PdfArticle(
+                position=position,
+                title=article.title,
+                summary=article.summary or article.description,
+                key_points=key_points,
+                categories=[
+                    name
+                    for (name,) in db.query(Category.name)
+                    .join(ArticleCategory, ArticleCategory.category_id == Category.id)
+                    .filter(ArticleCategory.article_id == article.id)
+                    .order_by(Category.name.asc())
+                    .all()
+                ],
+                source_name=source_names.get(article.source_id),
+                published_at=article.published_at,
+                url=article.original_url,
+            )
+        )
+
+    pdf_bytes = build_newsletter_pdf(
+        PdfNewsletter(
+            title=newsletter.title,
+            newsletter_date=newsletter.newsletter_date,
+            intro=newsletter.intro,
+            generated_at=newsletter.generated_at,
+            articles=pdf_articles,
+        )
+    )
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="defense-brief-{newsletter.newsletter_date.isoformat()}.pdf"',
+        },
+    )

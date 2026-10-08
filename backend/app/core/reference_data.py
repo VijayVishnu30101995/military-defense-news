@@ -49,9 +49,10 @@ DEFAULT_ADMIN_PASSWORD = "Defence123!"
 
 DEFAULT_SOURCES = [
     (
-        "Reuters World",
+        "Reuters Defense",
         "https://www.reuters.com/world/",
-        "https://feeds.reuters.com/reuters/worldNews",
+        # Reuters has no public RSS feed; this Google News query is limited to reuters.com.
+        "https://news.google.com/rss/search?q=site:reuters.com+(military+OR+defense+OR+missile+OR+army+OR+navy+OR+drone+OR+war)+when:2d&hl=en-US&gl=US&ceid=US:en",
         "Global",
         "Global",
         "wire",

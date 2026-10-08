@@ -9,7 +9,7 @@ from xml.etree import ElementTree
 
 from sqlalchemy.orm import Session
 
-from app.core.content_filters import is_off_topic_story
+from app.core.content_filters import score_defense_relevance
 from app.models.article import Article
 from app.models.job_run import JobRun
 from app.models.source import Source
@@ -21,6 +21,18 @@ from app.schemas.source_collection_job import SourceCollectionJobCreate
 from app.services.alerts import alert_source_failure
 from app.services.feed_text import body_text_from_html, clean_author, clean_summary, score_importance, split_paragraphs
 from app.services.source_collection_job import SourceCollectionJobService
+
+# Feeds routinely offer tracking pixels, site furniture and author avatars as the
+# first image. Storing one of those is worse than storing nothing.
+JUNK_IMAGE_PATTERN = re.compile(
+    r"(?:1x1|\bpixel\b|spacer|blank\.|transparent\.|\bdot\.|beacon|track(?:ing)?[-_./]|"
+    r"\blogo\b|wordmark|favicon|avatar|gravatar|profile[-_]pic|\bbadge\b|\bicon\b|"
+    r"placeholder|default[-_](?:image|thumb)|feedburner|doubleclick|googlesyndication)",
+    re.IGNORECASE,
+)
+# Dimensions advertised in the URL itself, e.g. .../photo-320x180.jpg or ?w=120&h=90
+_URL_DIMENSIONS = re.compile(r"(?:[-_/](\d{2,4})x(\d{2,4})[._-])|(?:[?&](?:w|width)=(\d{2,4}))", re.IGNORECASE)
+IMAGE_MIN_EDGE = 320
 
 ATOM_NS = "http://www.w3.org/2005/Atom"
 CONTENT_NS = "http://purl.org/rss/1.0/modules/content/"
@@ -169,16 +181,40 @@ class SourceCollectorService:
             candidates.append(img_match.group(1))
 
         for candidate in candidates:
-            cleaned = candidate.strip()
-            if not cleaned:
-                continue
-            if cleaned.startswith("//"):
-                cleaned = f"https:{cleaned}"
-            if cleaned.startswith("/") and fallback_base_url:
-                cleaned = urljoin(fallback_base_url, cleaned)
-            if cleaned.startswith("http://") or cleaned.startswith("https://"):
-                return cleaned
+            usable = SourceCollectorService._usable_image_url(candidate, fallback_base_url)
+            if usable:
+                return usable
         return None
+
+    @staticmethod
+    def _usable_image_url(candidate: str | None, fallback_base_url: str | None = None) -> str | None:
+        """Normalize a candidate image URL, or return None if it is not worth storing."""
+        if not candidate:
+            return None
+        cleaned = candidate.strip()
+        if not cleaned:
+            return None
+
+        if cleaned.startswith("//"):
+            cleaned = f"https:{cleaned}"
+        elif cleaned.startswith("/") and fallback_base_url:
+            cleaned = urljoin(fallback_base_url, cleaned)
+        # Browsers block plain http images on the https site, which previously showed up
+        # as a mysteriously missing picture rather than as a collection failure.
+        if cleaned.startswith("http://"):
+            cleaned = "https://" + cleaned[len("http://"):]
+        if not cleaned.startswith("https://"):
+            return None
+
+        if JUNK_IMAGE_PATTERN.search(cleaned):
+            return None
+
+        match = _URL_DIMENSIONS.search(cleaned)
+        if match:
+            dimensions = [int(group) for group in match.groups() if group]
+            if dimensions and min(dimensions) < IMAGE_MIN_EDGE:
+                return None
+        return cleaned
 
     @staticmethod
     def _extract_image_from_html(html: str | None, fallback_base_url: str | None = None) -> str | None:
@@ -194,15 +230,12 @@ class SourceCollectorService:
         ]
 
         for pattern in patterns:
-            match = re.search(pattern, html, flags=re.IGNORECASE | re.DOTALL)
-            if match:
-                image_url = match.group(1).strip()
-                if image_url.startswith("//"):
-                    image_url = f"https:{image_url}"
-                if image_url.startswith("/") and fallback_base_url:
-                    image_url = urljoin(fallback_base_url, image_url)
-                if image_url.startswith("http://") or image_url.startswith("https://"):
-                    return image_url
+            # The bare <img> pattern is last and matches site furniture as readily as
+            # article art, so every candidate goes through the junk screen.
+            for match in re.finditer(pattern, html, flags=re.IGNORECASE | re.DOTALL):
+                usable = SourceCollectorService._usable_image_url(match.group(1), fallback_base_url)
+                if usable:
+                    return usable
         return None
 
     def _resolve_article_image(self, article_url: str | None, fallback_base_url: str | None = None) -> str | None:
@@ -400,8 +433,10 @@ class SourceCollectorService:
         for item in items:
             link = item["link"]
             title = item["title"]
-            if is_off_topic_story(title, item.get("summary")):
-                continue
+            # Every item is stored with a score; the read endpoints decide what to show.
+            # Keeping the low scorers means the display threshold can be retuned without
+            # re-collecting feeds that have already moved on.
+            relevance = score_defense_relevance(title, item.get("summary"), item.get("body"))
 
             normalized_url = ArticleRepository.normalize_url(link)
             image_url = item.get("image_url") or self._resolve_article_image(link, fallback_base_url=source.website_url)
@@ -412,7 +447,13 @@ class SourceCollectorService:
                 canonical_url=None,
             )
             if duplicate is not None:
-                if image_url and not duplicate.image_url:
+                # Replace a stored logo or tracking pixel, not just a missing picture;
+                # older rows were populated before the junk screen existed.
+                if image_url and (
+                    not duplicate.image_url
+                    or JUNK_IMAGE_PATTERN.search(duplicate.image_url)
+                    or duplicate.image_url.startswith("http://")
+                ):
                     duplicate.image_url = image_url
                 if not duplicate.summary and item.get("summary"):
                     duplicate.summary = item.get("summary")
@@ -426,6 +467,8 @@ class SourceCollectorService:
                     duplicate.author = item.get("author")
                 if duplicate.importance_score is None or duplicate.importance_score == 50:
                     duplicate.importance_score = score_importance(title, item.get("summary"))
+                if duplicate.relevance_score is None:
+                    duplicate.relevance_score = relevance
                 self.db.commit()
                 continue
 
@@ -445,6 +488,7 @@ class SourceCollectorService:
                 published_at=self._parse_datetime(item.get("published")),
                 reliability_score=source.reliability_score,
                 importance_score=score_importance(title, item.get("summary")),
+                relevance_score=relevance,
                 categories=self._infer_categories(title, item.get("summary")),
             )
             self.article_repository.create(article_data)

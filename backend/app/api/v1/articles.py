@@ -8,6 +8,7 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user, require_admin
+from app.config import settings
 from app.core.content_filters import is_off_topic_story
 from app.database import get_db
 from app.models.article import Article
@@ -28,6 +29,35 @@ router = APIRouter(
 )
 
 
+def _visible_filter():
+    """SQL predicate for stories worth showing.
+
+    Below-threshold stories are collected and stored deliberately, so every read path
+    has to exclude them. Rows scored before this feature existed are null and are let
+    through here, then screened by the keyword filter in `_is_visible`.
+    """
+    return or_(
+        Article.relevance_score.is_(None),
+        Article.relevance_score >= settings.relevance_threshold,
+    )
+
+
+def _is_visible(article: Article) -> bool:
+    """Row-level counterpart to `_visible_filter`, including the legacy-null fallback."""
+    if article.relevance_score is not None:
+        return article.relevance_score >= settings.relevance_threshold
+    return not is_off_topic_story(article.title, article.summary or article.description)
+
+
+def _rank_key(article: Article):
+    """Defense relevance first, then importance, then recency."""
+    return (
+        article.relevance_score or 0,
+        article.importance_score or 0,
+        article.published_at or article.collected_at,
+    )
+
+
 def _serialize_article(db: Session, article: Article, category_names: list[str] | None = None) -> dict:
     if category_names is None:
         category_names = [
@@ -35,7 +65,7 @@ def _serialize_article(db: Session, article: Article, category_names: list[str] 
             for (name,) in db.query(Category.name)
             .join(ArticleCategory, ArticleCategory.category_id == Category.id)
             .filter(ArticleCategory.article_id == article.id)
-            .order_by(Category.name.asc())
+            .order_by(ArticleCategory.position.asc().nullslast(), Category.name.asc())
             .all()
         ]
 
@@ -56,6 +86,7 @@ def _serialize_article(db: Session, article: Article, category_names: list[str] 
         "published_at": article.published_at.isoformat() if article.published_at else None,
         "collected_at": article.collected_at.isoformat() if article.collected_at else None,
         "importance_score": article.importance_score,
+        "relevance_score": article.relevance_score,
         "reliability_score": article.reliability_score,
         "key_points": article.key_points,
         "categories": category_names,
@@ -73,7 +104,7 @@ def _serialize_articles(db: Session, articles: list[Article]) -> list[dict]:
             db.query(ArticleCategory.article_id, Category.name)
             .join(Category, Category.id == ArticleCategory.category_id)
             .filter(ArticleCategory.article_id.in_([article.id for article in articles]))
-            .order_by(Category.name.asc())
+            .order_by(ArticleCategory.position.asc().nullslast(), Category.name.asc())
             .all()
         )
         for article_id, name in rows:
@@ -85,14 +116,11 @@ def _serialize_articles(db: Session, articles: list[Article]) -> list[dict]:
 def get_dashboard(db: Session = Depends(get_db)) -> dict:
     articles = (
         db.query(Article)
+        .filter(_visible_filter())
         .order_by(Article.published_at.desc().nullslast(), Article.collected_at.desc())
         .all()
     )
-    articles = [
-        article
-        for article in articles
-        if not is_off_topic_story(article.title, article.summary or article.description)
-    ]
+    articles = [article for article in articles if _is_visible(article)]
     total_news = len(articles)
     important_news = sum(
         article.importance_score is not None and article.importance_score >= 80
@@ -101,15 +129,7 @@ def get_dashboard(db: Session = Depends(get_db)) -> dict:
     category_count = db.query(Category.id).count()
     source_count = db.query(Source.id).count()
 
-    top_developments = sorted(
-        articles,
-        key=lambda article: (
-            article.importance_score is not None,
-            article.importance_score or 0,
-            article.published_at or article.collected_at,
-        ),
-        reverse=True,
-    )[:4]
+    top_developments = sorted(articles, key=_rank_key, reverse=True)[:4]
     latest_news = articles[:6]
 
     latest_newsletter = db.query(Newsletter).order_by(Newsletter.newsletter_date.desc()).first()
@@ -191,7 +211,7 @@ def list_articles(
     page = max(page, 1)
     page_size = max(1, min(page_size, 100))
 
-    query = db.query(Article)
+    query = db.query(Article).filter(_visible_filter())
     if q and q.strip():
         term = f"%{q.strip()}%"
         category_match = (
@@ -218,14 +238,18 @@ def list_articles(
     if source_id is not None:
         query = query.filter(Article.source_id == source_id)
 
-    # Off-topic filtering runs in Python, so only the id and text columns are loaded for the whole result set.
-    candidates = query.with_entities(Article.id, Article.title, Article.summary, Article.description).order_by(
+    # Scored rows are already excluded in SQL; only the legacy nulls still need the
+    # keyword pass, so just the id and text columns are loaded for the whole result set.
+    candidates = query.with_entities(
+        Article.id, Article.title, Article.summary, Article.description, Article.relevance_score
+    ).order_by(
         Article.published_at.desc().nullslast(), Article.collected_at.desc()
     ).all()
     ordered_ids = [
         row.id
         for row in candidates
-        if not is_off_topic_story(row.title, row.summary or row.description)
+        if row.relevance_score is not None
+        or not is_off_topic_story(row.title, row.summary or row.description)
     ]
 
     start = (page - 1) * page_size
@@ -242,7 +266,7 @@ def list_articles(
 @router.get("/articles/{article_id}")
 def get_article(article_id: int, db: Session = Depends(get_db)) -> dict:
     article = db.query(Article).filter(Article.id == article_id).first()
-    if article is None or is_off_topic_story(article.title, article.summary or article.description):
+    if article is None or not _is_visible(article):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Article not found")
     return _serialize_article(db, article)
 
@@ -262,7 +286,11 @@ def _related_articles(db: Session, exclude_ids: set[int], limit: int) -> list[Ar
             article
             for article, _ in db.query(Article, shared)
             .join(ArticleCategory, ArticleCategory.article_id == Article.id)
-            .filter(ArticleCategory.category_id.in_(category_ids), Article.id.notin_(exclude_ids))
+            .filter(
+                ArticleCategory.category_id.in_(category_ids),
+                Article.id.notin_(exclude_ids),
+                _visible_filter(),
+            )
             .group_by(Article.id)
             .order_by(shared.desc(), Article.published_at.desc().nullslast())
             .limit(limit * 4)
@@ -271,7 +299,7 @@ def _related_articles(db: Session, exclude_ids: set[int], limit: int) -> list[Ar
         seen = exclude_ids | {article.id for article in candidates}
         candidates += (
             db.query(Article)
-            .filter(Article.id.notin_(seen))
+            .filter(Article.id.notin_(seen), _visible_filter())
             .order_by(Article.published_at.desc().nullslast(), Article.collected_at.desc())
             .limit(limit * 4)
             .all()
@@ -282,7 +310,7 @@ def _related_articles(db: Session, exclude_ids: set[int], limit: int) -> list[Ar
     for article in candidates:
         if article.normalized_title in seen_titles:
             continue
-        if is_off_topic_story(article.title, article.summary or article.description):
+        if not _is_visible(article):
             continue
         seen_titles.add(article.normalized_title)
         related.append(article)
@@ -322,11 +350,7 @@ def get_newsletter(newsletter_id: int, db: Session = Depends(get_db)) -> dict:
         .order_by(NewsletterArticle.position.asc())
         .all()
     )
-    article_rows = [
-        article
-        for article in article_rows
-        if not is_off_topic_story(article.title, article.summary or article.description)
-    ]
+    article_rows = [article for article in article_rows if _is_visible(article)]
 
     return {
         "id": newsletter.id,
@@ -347,16 +371,15 @@ def generate_newsletter(db: Session = Depends(get_db)) -> dict:
     if newsletter is None:
         article_candidates = (
             db.query(Article)
+            .filter(_visible_filter())
             .order_by(Article.published_at.desc().nullslast(), Article.collected_at.desc())
             .all()
         )
-        recent = [
-            article
-            for article in article_candidates
-            if not is_off_topic_story(article.title, article.summary or article.description)
-        ][:40]
-        # Lead with stories whose publishers syndicate the full text; sorted() is stable, so recency order holds.
-        ranked = sorted(recent, key=lambda article: not article.content_excerpt)
+        recent = [article for article in article_candidates if _is_visible(article)][:40]
+        # Strongest defense stories first, then full-text publishers ahead of summary-only
+        # ones; sorted() is stable, so each pass preserves the order of the one before.
+        ranked = sorted(recent, key=_rank_key, reverse=True)
+        ranked = sorted(ranked, key=lambda article: not article.content_excerpt)
         article_candidates = []
         per_source: dict[int, int] = {}
         for article in ranked:
@@ -407,11 +430,7 @@ def download_newsletter_pdf(newsletter_id: int, db: Session = Depends(get_db)) -
         .order_by(NewsletterArticle.position.asc())
         .all()
     )
-    article_rows = [
-        article
-        for article in article_rows
-        if not is_off_topic_story(article.title, article.summary or article.description)
-    ]
+    article_rows = [article for article in article_rows if _is_visible(article)]
 
     related_rows = _related_articles(db, {article.id for article in article_rows}, 5) if article_rows else []
 

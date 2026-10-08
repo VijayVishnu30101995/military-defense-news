@@ -42,20 +42,6 @@ const closeModalBtn = document.getElementById('closeModalBtn');
 const tokenKey = 'defense-brief-token';
 const themeKey = 'defense-brief-theme';
 
-const categoryImages = {
-  Air: 'https://images.unsplash.com/photo-1517479149777-5f3b1511d5ad?auto=format&fit=crop&w=900&q=80',
-  Naval: 'https://images.unsplash.com/photo-1578575437130-527eed3abbec?auto=format&fit=crop&w=900&q=80',
-  Land: 'https://images.unsplash.com/photo-1529107386315-e1a2ed48a620?auto=format&fit=crop&w=900&q=80',
-  Cyber: 'https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=900&q=80',
-  Space: 'https://images.unsplash.com/photo-1446776811953-b23d57bd21aa?auto=format&fit=crop&w=900&q=80',
-  Drones: 'https://images.unsplash.com/photo-1527977966376-1c8408f9f108?auto=format&fit=crop&w=900&q=80',
-  'Defense Technology': 'https://images.unsplash.com/photo-1550751827-4bd374c3f58b?auto=format&fit=crop&w=900&q=80',
-  'Military Exercises': 'https://images.unsplash.com/photo-1529107386315-e1a2ed48a620?auto=format&fit=crop&w=900&q=80',
-  Procurement: 'https://images.unsplash.com/photo-1552664730-d307ca884978?auto=format&fit=crop&w=900&q=80',
-  Geopolitics: 'https://images.unsplash.com/photo-1521295121783-8a321d551ad2?auto=format&fit=crop&w=900&q=80',
-  Default: 'https://images.unsplash.com/photo-1534796636912-3b95b3ab5986?auto=format&fit=crop&w=900&q=80',
-};
-
 const HEALTH_REFRESH_INTERVAL_MS = 60000; // 60s
 let healthRefreshTimer = null;
 
@@ -105,27 +91,35 @@ function cssUrl(value) {
   return String(value || '').replace(/'/g, "\\'");
 }
 
-function getCategoryImage(categories) {
-  const category = Array.isArray(categories) && categories.length ? categories[0] : 'Default';
-  return categoryImages[category] || categoryImages.Default;
+// A story with no usable picture gets a labelled tile rather than a stock photo, so
+// the page never implies a photograph belongs to a story it was not taken for.
+function placeholderHtml(categories, className = '') {
+  const label = Array.isArray(categories) && categories.length ? categories[0] : 'Defense';
+  return `<div class="img-placeholder ${className}" role="img" aria-label="No photograph available">
+    <span>${escapeHtml(label)}</span>
+  </div>`;
 }
 
 function imageHtml(url, categories, className = '') {
-  const fallback = getCategoryImage(categories);
-  const src = url || fallback;
-  return `<img class="${className}" src="${escapeHtml(src)}" data-fallback="${escapeHtml(fallback)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">`;
+  if (!url) return placeholderHtml(categories, className);
+  return `<img class="${className}" src="${escapeHtml(url)}" alt="" loading="lazy" decoding="async"
+    data-placeholder="${escapeHtml(JSON.stringify(categories || []))}">`;
 }
 
-// Swap a broken picture for its category photo once, then fall back to the placeholder tint.
+// A picture that fails to load is replaced by the same labelled tile. It must never be
+// swapped for another story's photograph, which is what made cards disagree with the
+// article they opened.
 document.addEventListener('error', (event) => {
   const img = event.target;
-  if (!(img instanceof HTMLImageElement)) return;
-  if (img.dataset.fallback && img.getAttribute('src') !== img.dataset.fallback) {
-    img.src = img.dataset.fallback;
-    img.dataset.fallback = '';
-  } else {
-    img.classList.add('img-failed');
+  if (!(img instanceof HTMLImageElement) || !img.dataset.placeholder) return;
+  let categories = [];
+  try {
+    categories = JSON.parse(img.dataset.placeholder);
+  } catch (error) {
+    categories = [];
   }
+  img.insertAdjacentHTML('afterend', placeholderHtml(categories, img.className));
+  img.remove();
 }, true);
 
 function getSourceName(id) {
@@ -311,8 +305,14 @@ function renderLead(items) {
   }
   leadGrid.classList.remove('hidden');
 
-  const preferred = items.findIndex((item) => item.image_url);
-  const leadIndex = preferred >= 0 ? preferred : 0;
+  // Lead on the strongest story rather than whichever recent one happened to have a
+  // picture; a photo still breaks ties, since the lead slot is mostly image.
+  const leadScore = (item) => (item.relevance_score || 0) + (item.importance_score || 0)
+    + (item.image_url ? 25 : 0);
+  const leadIndex = items.reduce(
+    (best, item, index) => (leadScore(item) > leadScore(items[best]) ? index : best),
+    0,
+  );
   const lead = items[leadIndex];
   const rest = items.filter((_, index) => index !== leadIndex).slice(0, 2);
 
@@ -614,27 +614,39 @@ function renderArticleResults(result) {
       year: 'numeric',
     }) : 'Recent';
 
+    const source = getSourceName(article.source_id);
     return `
-      <article class="article-card" data-article-id="${article.id}">
+      <article class="article-card${isPriority(article) ? ' priority' : ''}" data-open-article="${article.id}"
+        tabindex="0" role="button" aria-label="Open brief: ${escapeHtml(article.title)}">
         <div class="article-card-image">
           ${imageHtml(article.image_url, categories)}
-          ${getSourceName(article.source_id) ? `<span class="card-source">${escapeHtml(getSourceName(article.source_id))}</span>` : ''}
+          ${source ? `<span class="card-source">${escapeHtml(source)}</span>` : ''}
         </div>
         <div class="article-card-body">
           <div class="chip-row">
+            ${isPriority(article) ? '<span class="story-tag priority-tag">Priority</span>' : ''}
             ${categories.slice(0, 3).map((category) => `<span class="story-tag">${escapeHtml(category)}</span>`).join('')}
           </div>
           <h4>${escapeHtml(article.title)}</h4>
           <p>${escapeHtml(summarizeText(summary))}</p>
           <div class="article-card-footer">
             <span>${escapeHtml(published)}</span>
-            <button type="button" class="secondary small-btn" data-open-article="${article.id}">View brief</button>
+            <span class="card-cta">View brief</span>
           </div>
         </div>
       </article>
     `;
   }).join('');
   renderPagination(total, page);
+}
+
+// Stories the backend ranked as both strongly defense-related and consequential.
+const PRIORITY_RELEVANCE = 70;
+const PRIORITY_IMPORTANCE = 70;
+
+function isPriority(article) {
+  return (article.relevance_score || 0) >= PRIORITY_RELEVANCE
+    && (article.importance_score || 0) >= PRIORITY_IMPORTANCE;
 }
 
 function parseKeyPoints(value) {
@@ -1580,9 +1592,15 @@ leadGrid.addEventListener('keydown', (event) => {
 });
 
 articleResults.addEventListener('click', (event) => {
-  const button = event.target.closest('[data-open-article]');
-  if (button) {
-    openArticleDetail(Number(button.dataset.openArticle));
+  const card = event.target.closest('[data-open-article]');
+  if (card) openArticleDetail(Number(card.dataset.openArticle));
+});
+articleResults.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter' && event.key !== ' ') return;
+  const card = event.target.closest('[data-open-article]');
+  if (card) {
+    event.preventDefault();
+    openArticleDetail(Number(card.dataset.openArticle));
   }
 });
 

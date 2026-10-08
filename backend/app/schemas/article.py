@@ -44,6 +44,7 @@ class ArticleBase(BaseModel):
     region_id: int | None = None
     published_at: datetime | None = None
     importance_score: int | None = None
+    relevance_score: int | None = None
     reliability_score: int | None = None
     processing_status: str = "pending"
     duplicate_status: str = "unique"
@@ -73,6 +74,7 @@ class ArticleUpdate(BaseModel):
     region_id: int | None = None
     published_at: datetime | None = None
     importance_score: int | None = None
+    relevance_score: int | None = None
     reliability_score: int | None = None
     processing_status: str | None = None
     duplicate_status: str | None = None

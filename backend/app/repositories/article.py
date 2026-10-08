@@ -167,6 +167,7 @@ class ArticleRepository:
             region_id=data.region_id,
             published_at=data.published_at,
             importance_score=data.importance_score,
+            relevance_score=data.relevance_score,
             reliability_score=data.reliability_score,
             summary=data.summary,
             key_points=data.key_points,
@@ -180,7 +181,9 @@ class ArticleRepository:
         self.db.commit()
         self.db.refresh(article)
 
-        for category_name in data.categories:
+        # data.categories arrives best-match-first; keep that order so cards can show
+        # the most relevant label rather than the alphabetically first one.
+        for position, category_name in enumerate(data.categories):
             name = category_name.strip()
             if not name:
                 continue
@@ -202,7 +205,13 @@ class ArticleRepository:
                 .first()
             )
             if exists is None:
-                self.db.add(ArticleCategory(article_id=article.id, category_id=category.id))
+                self.db.add(
+                    ArticleCategory(
+                        article_id=article.id,
+                        category_id=category.id,
+                        position=position,
+                    )
+                )
 
         self.db.commit()
         return article

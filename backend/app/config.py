@@ -19,6 +19,10 @@ class Settings(BaseSettings):
 
     news_timezone: str = "Asia/Kolkata"
 
+    # Minimum defense-relevance score (0-100) a story needs to be shown. Stories below
+    # this are still collected and stored, so lowering it brings them back immediately.
+    relevance_threshold: int = 30
+
     smtp_host: str | None = None
     smtp_port: int = 587
     smtp_username: str | None = None

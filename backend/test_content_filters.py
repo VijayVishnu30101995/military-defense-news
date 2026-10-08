@@ -1,4 +1,10 @@
-from app.core.content_filters import is_defense_story, is_off_topic_story, is_sports_story
+from app.config import settings
+from app.core.content_filters import (
+    is_defense_story,
+    is_off_topic_story,
+    is_sports_story,
+    score_defense_relevance,
+)
 
 
 def test_filters_sports_news() -> None:
@@ -58,3 +64,62 @@ def test_description_can_establish_defense_relevance() -> None:
         "Leaders meet in Brussels",
         "Talks focus on NATO troop deployments along the eastern flank.",
     )
+
+
+def test_rejects_non_military_uses_of_war() -> None:
+    """Regression: these all used to pass because the veto was cancelled by the bare word "war"."""
+    for title in [
+        "US and China escalate trade war over tariffs",
+        "Airlines deepen price war on transatlantic routes",
+        "The culture war over school curriculums intensifies",
+        "Amazon and Walmart in bidding war for retail startup",
+        "Netflix orders new series about a war correspondent",
+    ]:
+        assert is_off_topic_story(title), title
+
+
+def test_rejects_commodity_news_that_mentions_conflict() -> None:
+    for title in [
+        "Shell expects record refining margins as Iran war boosts fuel markets",
+        "Gulf oil flows rise to average 81% of pre-war rate in September",
+        "India-bound sunflower oil cargoes face cancellation amid delays",
+    ]:
+        assert is_off_topic_story(title), title
+
+
+def test_supporting_terms_alone_are_not_enough() -> None:
+    """A civilian story built on one defense-adjacent word must not qualify."""
+    assert is_off_topic_story("Hospital drone delivery program launches in Rwanda")
+    assert score_defense_relevance("Hospital drone delivery program launches in Rwanda") < (
+        settings.relevance_threshold
+    )
+
+
+def test_recognises_military_aircraft_designators() -> None:
+    for title in [
+        "Northrop Grumman's YFQ-48 flies for the first time",
+        "MH-139A Grey Wolf enters full-rate production",
+        "The P-3 Orion airborne early warning aircraft has flown its last mission",
+        "Spain picks Airbus A321 for new electronic intelligence aircraft",
+    ]:
+        assert is_defense_story(title), title
+
+
+def test_aircraft_designator_pattern_ignores_civilian_strings() -> None:
+    for title in [
+        "COVID-19 cases rise across Europe",
+        "Apple reports Q-3 earnings beat",
+    ]:
+        assert is_off_topic_story(title), title
+
+
+def test_headline_outweighs_summary() -> None:
+    in_headline = score_defense_relevance("Navy destroyer deployed", "Routine update.")
+    in_summary = score_defense_relevance("Routine update", "Navy destroyer deployed.")
+    assert in_headline > in_summary
+
+
+def test_score_is_bounded() -> None:
+    assert score_defense_relevance("") == 0
+    dense = " ".join(["missile warship pentagon airstrike submarine"] * 20)
+    assert 0 <= score_defense_relevance(dense) <= 100

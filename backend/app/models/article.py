@@ -108,6 +108,14 @@ class Article(Base):
         nullable=True,
     )
 
+    # Null on rows collected before relevance scoring existed; those are screened by
+    # the keyword filter at read time until their source is next collected.
+    relevance_score: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+        index=True,
+    )
+
     reliability_score: Mapped[int | None] = mapped_column(
         Integer,
         nullable=True,

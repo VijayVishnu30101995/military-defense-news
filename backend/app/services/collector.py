@@ -19,7 +19,7 @@ from app.schemas.article import ArticleCreate
 from app.schemas.collection import CollectionRunResponse
 from app.schemas.source_collection_job import SourceCollectionJobCreate
 from app.services.alerts import alert_source_failure
-from app.services.feed_text import body_text_from_html, clean_author, clean_summary, split_paragraphs
+from app.services.feed_text import body_text_from_html, clean_author, clean_summary, score_importance, split_paragraphs
 from app.services.source_collection_job import SourceCollectionJobService
 
 ATOM_NS = "http://www.w3.org/2005/Atom"
@@ -424,6 +424,8 @@ class SourceCollectorService:
                     duplicate.content_excerpt = item.get("body")
                 if not duplicate.author and item.get("author"):
                     duplicate.author = item.get("author")
+                if duplicate.importance_score is None or duplicate.importance_score == 50:
+                    duplicate.importance_score = score_importance(title, item.get("summary"))
                 self.db.commit()
                 continue
 
@@ -442,7 +444,7 @@ class SourceCollectorService:
                 region_id=source.region_id,
                 published_at=self._parse_datetime(item.get("published")),
                 reliability_score=source.reliability_score,
-                importance_score=50,
+                importance_score=score_importance(title, item.get("summary")),
                 categories=self._infer_categories(title, item.get("summary")),
             )
             self.article_repository.create(article_data)

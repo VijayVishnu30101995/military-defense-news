@@ -108,6 +108,50 @@ def split_paragraphs(body: str | None) -> list[str]:
     return [p.strip() for p in (body or "").split("\n\n") if p.strip()]
 
 
+_IMPORTANCE_RULES: list[tuple[re.Pattern, int]] = [
+    # Direct combat / casualties — strongest signal
+    (re.compile(r'\b(strikes?|attacked?|offensive|invaded?|besieged?|bombardment|combat|assault|kill(?:ed|ing)?|casualties|destroyed?|downed?|shot down)\b', re.I), 25),
+    # Nuclear / strategic
+    (re.compile(r'\b(nuclear|thermonuclear|icbm|tactical nuke|dirty bomb|warhead|silo)\b', re.I), 22),
+    # Ballistic / hypersonic missiles
+    (re.compile(r'\b(ballistic|hypersonic|cruise missile|anti-ship missile|surface-to-air)\b', re.I), 18),
+    # Diplomatic milestones
+    (re.compile(r'\b(ceasefire|armistice|peace deal|treaty signed?|accord)\b', re.I), 18),
+    # Major naval platforms
+    (re.compile(r'\b(aircraft carrier|carrier strike group|nuclear submarine|ballistic missile submarine|destroyer)\b', re.I), 15),
+    # Missiles (general)
+    (re.compile(r'\b(missiles?|rocket barrage|rocket attack)\b', re.I), 12),
+    # Sanctions / strategic pressure
+    (re.compile(r'\b(sanctions?|embargo|export controls?|arms embargo|blacklist(?:ed)?)\b', re.I), 12),
+    # Drone strikes (operationally specific)
+    (re.compile(r'\b(drone strike|drone attack|uav strike|kamikaze drone|fpv drone)\b', re.I), 14),
+    # Generic drone / unmanned
+    (re.compile(r'\b(drones?|uavs?|unmanned aerial)\b', re.I), 7),
+    # High-value financial signal
+    (re.compile(r'\b(billion|trillion)\b', re.I), 8),
+    # Geopolitical tension
+    (re.compile(r'\b(ultimatum|escalation|brink|standoff|flashpoint)\b', re.I), 10),
+    # Deployments / exercises (lower signal)
+    (re.compile(r'\b(deployed?|deployment|exercises?|war games?|joint training|drills?)\b', re.I), 5),
+    # Procurement / contracts (lowest signal)
+    (re.compile(r'\b(contract(?:ed)?|procurement|acquisition|awarded|ordered)\b', re.I), 3),
+]
+
+_IMPORTANCE_BASE = 15
+
+
+def score_importance(title: str, summary: str | None) -> int:
+    """Return 0–100 importance score using weighted keyword rules; no external calls."""
+    headline = title.lower()
+    body = (summary or "").lower()
+    score = _IMPORTANCE_BASE
+    for pattern, points in _IMPORTANCE_RULES:
+        # Headline hits count 2× — the headline is the most signal-dense text.
+        score += len(pattern.findall(headline)) * points * 2
+        score += len(pattern.findall(body)) * points
+    return min(score, 100)
+
+
 def clean_author(value: str | None) -> str | None:
     if not value:
         return None

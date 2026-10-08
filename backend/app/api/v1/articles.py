@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user, require_admin
@@ -16,7 +17,8 @@ from app.models.newsletter import Newsletter
 from app.models.newsletter_article import NewsletterArticle
 from app.models.region import Region
 from app.models.source import Source
-from app.services.newsletter_pdf import PdfArticle, PdfNewsletter, build_newsletter_pdf
+from app.services.feed_text import split_paragraphs
+from app.services.newsletter_pdf import PdfArticle, PdfNewsletter, PdfRelated, build_newsletter_pdf
 
 router = APIRouter(
     prefix="",
@@ -175,6 +177,58 @@ def get_article(article_id: int, db: Session = Depends(get_db)) -> dict:
     return _serialize_article(db, article)
 
 
+def _related_articles(db: Session, exclude_ids: set[int], limit: int) -> list[Article]:
+    """Most recent stories sharing the most categories with `exclude_ids`, topped up with the latest news."""
+    category_ids = [
+        category_id
+        for (category_id,) in db.query(ArticleCategory.category_id)
+        .filter(ArticleCategory.article_id.in_(exclude_ids))
+        .distinct()
+    ]
+    candidates: list[Article] = []
+    if category_ids:
+        shared = func.count(ArticleCategory.category_id).label("shared")
+        candidates = [
+            article
+            for article, _ in db.query(Article, shared)
+            .join(ArticleCategory, ArticleCategory.article_id == Article.id)
+            .filter(ArticleCategory.category_id.in_(category_ids), Article.id.notin_(exclude_ids))
+            .group_by(Article.id)
+            .order_by(shared.desc(), Article.published_at.desc().nullslast())
+            .limit(limit * 4)
+        ]
+    if len(candidates) < limit * 4:
+        seen = exclude_ids | {article.id for article in candidates}
+        candidates += (
+            db.query(Article)
+            .filter(Article.id.notin_(seen))
+            .order_by(Article.published_at.desc().nullslast(), Article.collected_at.desc())
+            .limit(limit * 4)
+            .all()
+        )
+
+    related: list[Article] = []
+    seen_titles: set[str] = set()
+    for article in candidates:
+        if article.normalized_title in seen_titles:
+            continue
+        if is_off_topic_story(article.title, article.summary or article.description):
+            continue
+        seen_titles.add(article.normalized_title)
+        related.append(article)
+        if len(related) == limit:
+            break
+    return related
+
+
+@router.get("/articles/{article_id}/related")
+def get_related_articles(article_id: int, limit: int = 4, db: Session = Depends(get_db)) -> list[dict]:
+    if db.query(Article.id).filter(Article.id == article_id).first() is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Article not found")
+    limit = max(1, min(limit, 12))
+    return [_serialize_article(db, article) for article in _related_articles(db, {article_id}, limit)]
+
+
 @router.get("/newsletters/{newsletter_id}")
 def get_newsletter(newsletter_id: int, db: Session = Depends(get_db)) -> dict:
     newsletter = db.query(Newsletter).filter(Newsletter.id == newsletter_id).first()
@@ -216,11 +270,24 @@ def generate_newsletter(db: Session = Depends(get_db)) -> dict:
             .order_by(Article.published_at.desc().nullslast(), Article.collected_at.desc())
             .all()
         )
-        article_candidates = [
+        recent = [
             article
             for article in article_candidates
             if not is_off_topic_story(article.title, article.summary or article.description)
-        ][:5]
+        ][:40]
+        # Lead with stories whose publishers syndicate the full text; sorted() is stable, so recency order holds.
+        ranked = sorted(recent, key=lambda article: not article.content_excerpt)
+        article_candidates = []
+        per_source: dict[int, int] = {}
+        for article in ranked:
+            if per_source.get(article.source_id, 0) >= 2:
+                continue
+            per_source[article.source_id] = per_source.get(article.source_id, 0) + 1
+            article_candidates.append(article)
+            if len(article_candidates) == 5:
+                break
+        if len(article_candidates) < 5:
+            article_candidates += [article for article in ranked if article not in article_candidates][: 5 - len(article_candidates)]
 
         newsletter = Newsletter(
             newsletter_date=newsletter_date,
@@ -266,11 +333,23 @@ def download_newsletter_pdf(newsletter_id: int, db: Session = Depends(get_db)) -
         if not is_off_topic_story(article.title, article.summary or article.description)
     ]
 
+    related_rows = _related_articles(db, {article.id for article in article_rows}, 5) if article_rows else []
+
     source_names = dict(
         db.query(Source.id, Source.name)
-        .filter(Source.id.in_({article.source_id for article in article_rows}))
+        .filter(Source.id.in_({article.source_id for article in article_rows + related_rows}))
         .all()
     )
+
+    def category_names(article_id: int) -> list[str]:
+        return [
+            name
+            for (name,) in db.query(Category.name)
+            .join(ArticleCategory, ArticleCategory.category_id == Category.id)
+            .filter(ArticleCategory.article_id == article_id)
+            .order_by(Category.name.asc())
+            .all()
+        ]
 
     pdf_articles = []
     for position, article in enumerate(article_rows, start=1):
@@ -284,21 +363,27 @@ def download_newsletter_pdf(newsletter_id: int, db: Session = Depends(get_db)) -
                 position=position,
                 title=article.title,
                 summary=article.summary or article.description,
+                body=split_paragraphs(article.content_excerpt),
                 key_points=key_points,
-                categories=[
-                    name
-                    for (name,) in db.query(Category.name)
-                    .join(ArticleCategory, ArticleCategory.category_id == Category.id)
-                    .filter(ArticleCategory.article_id == article.id)
-                    .order_by(Category.name.asc())
-                    .all()
-                ],
+                categories=category_names(article.id),
                 source_name=source_names.get(article.source_id),
+                author=article.author,
                 published_at=article.published_at,
                 url=article.original_url,
                 image_url=article.image_url,
             )
         )
+
+    pdf_related = [
+        PdfRelated(
+            title=article.title,
+            source_name=source_names.get(article.source_id),
+            published_at=article.published_at,
+            url=article.original_url,
+            categories=category_names(article.id),
+        )
+        for article in related_rows
+    ]
 
     pdf_bytes = build_newsletter_pdf(
         PdfNewsletter(
@@ -307,6 +392,8 @@ def download_newsletter_pdf(newsletter_id: int, db: Session = Depends(get_db)) -
             intro=newsletter.intro,
             generated_at=newsletter.generated_at,
             articles=pdf_articles,
+            related=pdf_related,
+            edition=newsletter.id,
         )
     )
     return Response(

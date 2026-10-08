@@ -619,22 +619,77 @@ function parseKeyPoints(value) {
     .slice(0, 6);
 }
 
+// Feed descriptions are often just the opening of the body cut off with "...", so when the
+// full text is present its first paragraph becomes the standfirst instead of the truncated teaser.
+function articleText(article) {
+  const paragraphs = String(article.content_excerpt || '')
+    .split(/\n{2,}/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const summary = String(article.summary || article.description || '').trim();
+  const teaser = summary.replace(/\s*(\[?(\.\.\.|…)\]?)\s*$/, '').slice(0, 100);
+  if (paragraphs.length && (!summary || paragraphs.join(' ').startsWith(teaser))) {
+    return { standfirst: paragraphs[0], paragraphs: paragraphs.slice(1) };
+  }
+  return { standfirst: summary, paragraphs };
+}
+
+function hostOf(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return '';
+  }
+}
+
+function renderRelatedArticles(container, items) {
+  if (!items.length) {
+    container.closest('.article-related')?.remove();
+    return;
+  }
+  container.innerHTML = items.map((item) => {
+    const tag = Array.isArray(item.categories) && item.categories.length ? item.categories[0] : 'Defense';
+    const when = item.published_at
+      ? new Date(item.published_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+      : 'Recent';
+    const meta = [getSourceName(item.source_id), when].filter(Boolean).map(escapeHtml).join(' · ');
+    return `
+      <button type="button" class="related-card" data-open-article="${item.id}">
+        <span class="related-thumb">${imageHtml(item.image_url, item.categories)}</span>
+        <span class="related-text">
+          <span class="story-tag">${escapeHtml(tag)}</span>
+          <strong>${escapeHtml(item.title)}</strong>
+          <small>${meta}</small>
+        </span>
+      </button>
+    `;
+  }).join('');
+}
+
 function openArticleDetail(articleId) {
   api(`/articles/${articleId}`)
     .then((article) => {
       const categories = Array.isArray(article.categories) && article.categories.length ? article.categories : ['Defense'];
-      const keyPoints = parseKeyPoints(article.key_points || article.summary || '');
-      const meta = [
-        article.published_at ? `Published ${new Date(article.published_at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}` : 'Published recently',
-        getSourceName(article.source_id) || `Source ID ${article.source_id}`,
-        article.importance_score ? `Importance ${article.importance_score}` : 'Importance unscored',
-      ];
+      const keyPoints = parseKeyPoints(article.key_points);
+      const sourceName = getSourceName(article.source_id) || hostOf(article.original_url) || 'Source';
+      const { standfirst: summary, paragraphs } = articleText(article);
+      const published = article.published_at
+        ? new Date(article.published_at).toLocaleString(undefined, { dateStyle: 'long', timeStyle: 'short' })
+        : 'Recently published';
+      const byline = [
+        article.author ? `By <strong>${escapeHtml(article.author)}</strong>` : '',
+        escapeHtml(sourceName),
+        `<time datetime="${escapeHtml(article.published_at || '')}">${escapeHtml(published)}</time>`,
+      ].filter(Boolean).join('<span aria-hidden="true">·</span>');
+      const readTime = paragraphs.length
+        ? Math.max(1, Math.round(`${summary} ${paragraphs.join(' ')}`.split(/\s+/).length / 230))
+        : 0;
 
       articleDetailContent.innerHTML = `
         <div class="article-detail-hero">
           ${imageHtml(article.image_url, categories, 'hero-img')}
           <div class="article-detail-overlay">
-            <p class="eyebrow">Briefing note</p>
+            <p class="eyebrow">${escapeHtml(categories[0])}${readTime ? ` · ${readTime} min read` : ''}</p>
             <h3 id="articleDetailTitle">${escapeHtml(article.title)}</h3>
           </div>
         </div>
@@ -642,31 +697,48 @@ function openArticleDetail(articleId) {
           <div class="chip-row">
             ${categories.map((category) => `<span class="story-tag">${escapeHtml(category)}</span>`).join('')}
           </div>
-          <p class="article-detail-meta">${meta.map((entry) => `<span>${escapeHtml(entry)}</span>`).join(' • ')}</p>
-          <div class="article-detail-section">
-            <h4>Executive summary</h4>
-            <p>${escapeHtml(article.summary || article.description || 'No summary available.')}</p>
-          </div>
-          <div class="article-detail-section">
-            <h4>Key points</h4>
-            <ul>
-              ${keyPoints.length ? keyPoints.map((point) => `<li>${escapeHtml(point)}</li>`).join('') : '<li>No key points extracted.</li>'}
-            </ul>
-          </div>
+          <p class="article-byline">${byline}</p>
+          ${summary ? `<p class="article-standfirst">${escapeHtml(summary)}</p>` : ''}
+          ${paragraphs.length
+            ? `<div class="article-body-text">${paragraphs.map((p) => `<p>${escapeHtml(p)}</p>`).join('')}</div>`
+            : `<div class="article-detail-section">
+                <h4>Full report</h4>
+                <p>${escapeHtml(sourceName)} shares only a summary of this story in its feed. The complete report is available on ${escapeHtml(hostOf(article.original_url) || 'the publisher\'s site')}.</p>
+              </div>`}
+          ${keyPoints.length ? `
+            <div class="article-detail-section">
+              <h4>Key points</h4>
+              <ul>${keyPoints.map((point) => `<li>${escapeHtml(point)}</li>`).join('')}</ul>
+            </div>` : ''}
           <div class="article-detail-actions">
             <a href="${escapeHtml(article.original_url || '#')}" target="_blank" rel="noreferrer">
-              <button type="button">Open source</button>
+              <button type="button">Read on ${escapeHtml(sourceName)}</button>
             </a>
           </div>
+          <section class="article-related" aria-labelledby="relatedHeading">
+            <h4 id="relatedHeading">Related coverage</h4>
+            <div class="related-grid" id="relatedArticles"><p class="muted">Loading related stories…</p></div>
+          </section>
         </div>
       `;
       articleDetailModal.classList.remove('hidden');
       articleDetailModal.setAttribute('aria-hidden', 'false');
+      articleDetailModal.querySelector('.modal-panel').scrollTop = 0;
+
+      const relatedContainer = document.getElementById('relatedArticles');
+      api(`/articles/${article.id}/related?limit=4`)
+        .then((items) => renderRelatedArticles(relatedContainer, Array.isArray(items) ? items : []))
+        .catch(() => relatedContainer.closest('.article-related')?.remove());
     })
     .catch((error) => {
       alert(`Unable to open article: ${error.message}`);
     });
 }
+
+articleDetailContent.addEventListener('click', (event) => {
+  const card = event.target.closest('[data-open-article]');
+  if (card) openArticleDetail(Number(card.dataset.openArticle));
+});
 
 function showSourceHealthModal(health) {
   const modal = document.getElementById('sourceHealthModal');

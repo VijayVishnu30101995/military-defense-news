@@ -19,7 +19,37 @@ from app.schemas.article import ArticleCreate
 from app.schemas.collection import CollectionRunResponse
 from app.schemas.source_collection_job import SourceCollectionJobCreate
 from app.services.alerts import alert_source_failure
+from app.services.feed_text import body_text_from_html, clean_author, clean_summary, split_paragraphs
 from app.services.source_collection_job import SourceCollectionJobService
+
+ATOM_NS = "http://www.w3.org/2005/Atom"
+CONTENT_NS = "http://purl.org/rss/1.0/modules/content/"
+DC_NS = "http://purl.org/dc/elements/1.1/"
+
+# Whole-word patterns: plain substring checks tagged "affairs" as Air and "Poland" as Land.
+CATEGORY_PATTERNS = {
+    category: re.compile(r"\b(?:" + "|".join(terms) + r")\b")
+    for category, terms in {
+        "Air": [r"air ?forces?", r"aircraft", r"airmen", r"fighters?", r"jets?", r"bombers?", r"aerospace",
+                r"f-\d+\w?", r"helicopters?", r"air defen[cs]e", r"airstrikes?", r"aviation"],
+        "Naval": [r"nav(?:y|ies|al)", r"warships?", r"ships?", r"submarines?", r"maritime", r"fleets?",
+                  r"frigates?", r"destroyers?", r"carriers?", r"coast guard", r"marines?"],
+        "Land": [r"arm(?:y|ies)", r"soldiers?", r"troops", r"infantry", r"(?<!think )tanks?", r"artillery",
+                 r"armou?red", r"howitzers?", r"rifles?", r"ground forces?", r"brigades?"],
+        "Defense Technology": [r"missiles?", r"hypersonic", r"lasers?", r"directed[- ]energy", r"radars?",
+                               r"artificial intelligence", r"a\.?i\.?", r"autonomous", r"weapons? systems?",
+                               r"interceptors?", r"munitions?", r"prototypes?", r"sixth[- ]generation"],
+        "Drones": [r"drones?", r"uavs?", r"uas", r"unmanned", r"uncrewed", r"loitering"],
+        "Space": [r"space ?force", r"space command", r"satellites?", r"orbit(?:al)?", r"spacecraft",
+                  r"space-based", r"anti-satellite"],
+        "Cyber": [r"cyber\w*", r"hack(?:ers?|ing|ed)", r"ransomware", r"malware", r"data breach"],
+        "Procurement": [r"procurement", r"contracts?", r"acquisitions?", r"budget", r"defen[cs]e industry",
+                        r"shipyards?", r"manufactur\w+", r"orders? for", r"ordered", r"arms deals?"],
+        "Military Exercises": [r"exercises?", r"drills?", r"war ?games?", r"joint training", r"maneuvers?"],
+        "Geopolitics": [r"geopolitic\w*", r"diplomac\w*", r"diplomats?", r"summit", r"sanctions?", r"nato",
+                        r"ceasefire", r"treaty", r"alliances?", r"tensions?", r"minister", r"talks"],
+    }.items()
+}
 
 
 class SourceCollectorService:
@@ -56,23 +86,15 @@ class SourceCollectorService:
 
     @staticmethod
     def _infer_categories(title: str, description: str | None) -> list[str]:
-        text = f"{title} {description or ''}".lower()
-        keywords = {
-            "Air": ["air", "fighter", "jet", "aerospace", "missile", "air defense"],
-            "Naval": ["navy", "naval", "ship", "submarine", "maritime", "fleet"],
-            "Land": ["army", "ground", "land", "vehicle", "tank", "deployment"],
-            "Cyber": ["cyber", "hacking", "network", "data security", "digital"],
-            "Space": ["space", "satellite", "orbital", "rocket", "launch"],
-            "Drones": ["drone", "uav", "unmanned", "surveillance"],
-            "Procurement": ["procurement", "contract", "deal", "acquisition", "order"],
-            "Military Exercises": ["exercise", "drill", "training", "maneuver"],
-            "Geopolitics": ["geopolitics", "diplomacy", "summit", "policy", "relations"],
-        }
-        matches = []
-        for category, terms in keywords.items():
-            if any(term in text for term in terms):
-                matches.append(category)
-        return matches[:3] or ["Geopolitics"]
+        headline = title.lower()
+        text = f"{headline} {(description or '').lower()}"
+        scores = {}
+        for category, pattern in CATEGORY_PATTERNS.items():
+            hits = len(pattern.findall(text)) + len(pattern.findall(headline))
+            if hits:
+                scores[category] = hits
+        ranked = sorted(scores, key=lambda category: scores[category], reverse=True)
+        return ranked[:3] or ["Geopolitics"]
 
     @staticmethod
     def _normalize_http_url(value: str | None, fallback_base_url: str | None = None) -> str | None:
@@ -252,12 +274,29 @@ class SourceCollectorService:
             if not title or not link:
                 continue
 
+            body_node = item.find(f"{{{CONTENT_NS}}}encoded")
+            if body_node is None:
+                body_node = item.find(f"{{{ATOM_NS}}}content")
+            body = body_text_from_html("".join(body_node.itertext())) if body_node is not None else None
+            summary = clean_summary(summary)
+            if not summary and body:
+                summary = split_paragraphs(body)[0]
+
+            author_node = item.find(f"{{{DC_NS}}}creator")
+            if author_node is None:
+                author_node = item.find("author")
+            if author_node is None:
+                author_node = item.find(f"{{{ATOM_NS}}}author/{{{ATOM_NS}}}name")
+            author = clean_author(self._safe_text(author_node))
+
             items.append({
                 "title": title,
                 "link": link,
                 "summary": summary,
                 "published": published,
                 "image_url": image_url,
+                "body": body,
+                "author": author,
             })
         return items
 
@@ -381,6 +420,10 @@ class SourceCollectorService:
                     duplicate.description = item.get("summary")
                 if duplicate.published_at is None and item.get("published"):
                     duplicate.published_at = self._parse_datetime(item.get("published"))
+                if not duplicate.content_excerpt and item.get("body"):
+                    duplicate.content_excerpt = item.get("body")
+                if not duplicate.author and item.get("author"):
+                    duplicate.author = item.get("author")
                 self.db.commit()
                 continue
 
@@ -391,6 +434,8 @@ class SourceCollectorService:
                 canonical_url=normalized_url,
                 description=item.get("summary"),
                 summary=item.get("summary"),
+                content_excerpt=item.get("body"),
+                author=item.get("author"),
                 image_url=image_url,
                 language=source.language,
                 country_id=source.country_id,

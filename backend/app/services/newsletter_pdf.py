@@ -4,9 +4,12 @@ import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from io import BytesIO
+from urllib.error import URLError
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 from xml.sax.saxutils import escape
 
+from PIL import Image as PILImage
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_LEFT
 from reportlab.lib.pagesizes import A4
@@ -14,6 +17,7 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.platypus import (
     HRFlowable,
+    Image,
     KeepTogether,
     Paragraph,
     SimpleDocTemplate,
@@ -27,6 +31,8 @@ RULE = colors.HexColor("#c9c4b3")
 BAND = colors.HexColor("#14170f")
 
 PAGE_MARGIN = 18 * mm
+CONTENT_WIDTH = A4[0] - 2 * PAGE_MARGIN
+MAX_IMAGE_HEIGHT = 65 * mm
 
 
 @dataclass
@@ -39,6 +45,7 @@ class PdfArticle:
     source_name: str | None = None
     published_at: datetime | None = None
     url: str | None = None
+    image_url: str | None = None
 
 
 @dataclass
@@ -116,6 +123,36 @@ def _format_date(value: datetime | date | None) -> str:
     return f"{value.day} {value:%B %Y}"
 
 
+def _fetch_image(url: str | None) -> Image | None:
+    """Download and size an article image for the PDF; returns None on any failure."""
+    if not url:
+        return None
+    try:
+        request = Request(url, headers={"User-Agent": "DefenseBriefPDF/1.0"})
+        with urlopen(request, timeout=6) as response:
+            data = response.read()
+    except (URLError, OSError, ValueError):
+        return None
+
+    try:
+        pil_image = PILImage.open(BytesIO(data))
+        pil_image.load()
+        width_px, height_px = pil_image.size
+    except Exception:
+        return None
+
+    if not width_px or not height_px:
+        return None
+
+    width = CONTENT_WIDTH
+    height = width * (height_px / width_px)
+    if height > MAX_IMAGE_HEIGHT:
+        height = MAX_IMAGE_HEIGHT
+        width = height * (width_px / height_px)
+
+    return Image(BytesIO(data), width=width, height=height)
+
+
 def _article_block(article: PdfArticle, styles: dict[str, ParagraphStyle]) -> KeepTogether:
     meta_bits = [
         bit for bit in (article.source_name, _format_date(article.published_at)) if bit
@@ -125,6 +162,11 @@ def _article_block(article: PdfArticle, styles: dict[str, ParagraphStyle]) -> Ke
     if article.categories:
         parts.append(Paragraph(_para(" / ".join(article.categories)).upper(), styles["tags"]))
     parts.append(Paragraph(f"{article.position:02d} &nbsp; {_para(article.title)}", styles["heading"]))
+    image = _fetch_image(article.image_url)
+    if image is not None:
+        parts.append(Spacer(1, 2))
+        parts.append(image)
+        parts.append(Spacer(1, 4))
     if meta_bits:
         parts.append(Paragraph(_para("  |  ".join(meta_bits)), styles["meta"]))
         parts.append(Spacer(1, 4))

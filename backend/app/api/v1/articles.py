@@ -296,6 +296,7 @@ def download_newsletter_pdf(newsletter_id: int, db: Session = Depends(get_db)) -
                 source_name=source_names.get(article.source_id),
                 published_at=article.published_at,
                 url=article.original_url,
+                image_url=article.image_url,
             )
         )
 

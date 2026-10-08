@@ -934,15 +934,27 @@ async function login(event) {
 }
 
 async function startSession() {
-  try {
-    setCurrentUser(await api('/auth/me'));
-  } catch (error) {
-    // api() already logged out on 401. For other failures keep the session
-    // but leave the role unset, so admin controls stay hidden.
-    if (!getToken()) return;
-    console.warn('Unable to load current user:', error);
+  let user = null;
+  for (let attempt = 0; attempt < 5 && !user; attempt++) {
+    try {
+      user = await api('/auth/me');
+    } catch (error) {
+      // api() already logged out on 401, which clears the token.
+      if (!getToken()) return;
+      console.warn('Unable to load current user, retrying:', error);
+      await new Promise((resolve) => setTimeout(resolve, 3000 * (attempt + 1)));
+    }
   }
 
+  if (!user) {
+    const el = document.getElementById('loginError');
+    el.textContent = 'Could not reach the server. Please try signing in again in a moment.';
+    el.classList.remove('hidden');
+    return;
+  }
+
+  setCurrentUser(user);
+  document.getElementById('loginError').classList.add('hidden');
   authCard.classList.add('hidden');
   dashboardEl.classList.remove('hidden');
   logoutBtn.classList.remove('hidden');

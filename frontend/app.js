@@ -1041,6 +1041,11 @@ function logout() {
   emailInput.focus();
 }
 
+document.getElementById('togglePassword').addEventListener('click', () => {
+  const isPassword = passwordInput.type === 'password';
+  passwordInput.type = isPassword ? 'text' : 'password';
+  document.getElementById('togglePassword').textContent = isPassword ? '🙈' : '👁';
+});
 loginForm.addEventListener('submit', login);
 logoutBtn.addEventListener('click', logout);
 generateBriefBtn.addEventListener('click', generateBrief);

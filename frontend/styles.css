@@ -1924,3 +1924,8 @@ button.close-modal:hover { border-color: var(--accent); color: var(--accent); }
   .radar-blip { opacity: 1; }
   .ticker-track { overflow-x: auto; -webkit-mask-image: none; mask-image: none; }
 }
+
+.password-field { position: relative; display: flex; }
+.password-field input { flex: 1; padding-right: 2.4rem; }
+.eye-btn { position: absolute; right: 0; top: 0; bottom: 0; background: none; border: none; cursor: pointer; padding: 0 0.6rem; font-size: 1rem; color: var(--text-muted, #888); }
+.eye-btn:hover { color: var(--text, #fff); }

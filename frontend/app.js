@@ -1356,8 +1356,7 @@ if (clearNewsBtn) {
     const orig = clearNewsBtn.textContent;
     clearNewsBtn.textContent = 'Clearing...';
     try {
-      const res = await apiFetch('/articles', { method: 'DELETE' });
-      const data = await res.json();
+      const data = await api('/articles', { method: 'DELETE' });
       alert(`Cleared ${data.deleted_articles} articles and ${data.deleted_newsletters} newsletters.`);
       await loadDashboard();
     } catch (e) {

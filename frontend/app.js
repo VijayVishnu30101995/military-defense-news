@@ -947,6 +947,7 @@ async function startSession() {
   }
 
   if (!user) {
+    authCard.classList.remove('hidden');
     const el = document.getElementById('loginError');
     el.textContent = 'Could not reach the server. Please try signing in again in a moment.';
     el.classList.remove('hidden');
@@ -1554,6 +1555,8 @@ window.addEventListener('beforeunload', stopHealthRefresh);
 
 if (getToken()) {
   startSession();
+} else {
+  authCard.classList.remove('hidden');
 }
 
 // Refresh helper used by the periodic timer and can be invoked manually

@@ -718,37 +718,8 @@ function showSourceHealthModal(health) {
         <h4>Last job error</h4>
         <p id="${errorId}" class="health-error-text">${health.job_last_error ? escapeHtml(health.job_last_error) : 'None'}</p>
       </div>
-      <div class="article-detail-actions">
-        <button type="button" class="secondary" id="healthModalCollectBtn">Collect now</button>
-      </div>
     </div>
   `;
-
-  // Attach collect action to the modal button (with loading state)
-  const collectBtn = document.getElementById('healthModalCollectBtn');
-  if (collectBtn) {
-    collectBtn.addEventListener('click', async () => {
-      if (!health.source_id) return;
-      const origText = collectBtn.textContent;
-      try {
-        collectBtn.disabled = true;
-        collectBtn.classList.add('loading');
-        collectBtn.textContent = 'Collecting...';
-        await collectSource(health.source_id);
-        // ensure sources and aggregate health are refreshed after collection
-        await loadReferenceData();
-        await loadArticles();
-        renderAggregateHealth();
-      } catch (e) {
-        // errors are surfaced by collectSource
-      } finally {
-        collectBtn.disabled = false;
-        collectBtn.classList.remove('loading');
-        collectBtn.textContent = origText;
-        closeSourceHealthModal();
-      }
-    });
-  }
 
   // Close modal handler
   const backdrop = modal.querySelector('[data-close-health-modal]');

@@ -554,13 +554,7 @@ function renderSourceTable(sources) {
 
 function renderPagination(total, page) {
   const totalPages = Math.ceil(total / PAGE_SIZE);
-  let el = document.getElementById('articlePagination');
-  if (!el) {
-    el = document.createElement('div');
-    el.id = 'articlePagination';
-    el.className = 'pagination';
-    articleResults.insertAdjacentElement('afterend', el);
-  }
+  const el = document.getElementById('articlePagination');
   if (totalPages <= 1) { el.innerHTML = ''; return; }
   const prev = `<button class="pg-btn" data-pg="${page - 1}" ${page === 1 ? 'disabled' : ''}>&#8592; Prev</button>`;
   const next = `<button class="pg-btn" data-pg="${page + 1}" ${page === totalPages ? 'disabled' : ''}>Next &#8594;</button>`;

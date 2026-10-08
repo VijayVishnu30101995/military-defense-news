@@ -563,6 +563,34 @@ function renderPagination(total, page) {
   el.innerHTML = prev + nums + next;
 }
 
+const resultViewKey = 'defense-brief-results-view';
+
+function applyResultView(view) {
+  articleResults.classList.toggle('list-view', view === 'list');
+  document.querySelectorAll('[data-results-view]').forEach((btn) => {
+    const active = btn.dataset.resultsView === view;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-pressed', String(active));
+  });
+}
+
+function setResultView(view) {
+  try {
+    localStorage.setItem(resultViewKey, view);
+  } catch (error) {
+    // Storage can be blocked; the choice then lasts only for this page load.
+  }
+  applyResultView(view);
+}
+
+function getResultView() {
+  try {
+    return localStorage.getItem(resultViewKey) === 'list' ? 'list' : 'cards';
+  } catch (error) {
+    return 'cards';
+  }
+}
+
 function renderArticleResults(result) {
   const pageItems = Array.isArray(result.items) ? result.items : [];
   const total = result.total || 0;
@@ -1539,6 +1567,11 @@ themeToggleBtn.addEventListener('click', () => {
 });
 
 setTheme(getTheme());
+applyResultView(getResultView());
+document.querySelector('.results-header-controls').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-results-view]');
+  if (button) setResultView(button.dataset.resultsView);
+});
 startClock();
 
 showView('dashboard');

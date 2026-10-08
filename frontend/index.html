@@ -161,7 +161,13 @@
 
                   <div class="results-header">
                     <h3>Filtered coverage</h3>
-                    <span id="articleCountLabel">0 items</span>
+                    <div class="results-header-controls">
+                      <span id="articleCountLabel">0 items</span>
+                      <div class="view-toggle" role="group" aria-label="Result layout">
+                        <button type="button" class="secondary small-btn" data-results-view="cards" aria-pressed="true">Cards</button>
+                        <button type="button" class="secondary small-btn" data-results-view="list" aria-pressed="false">List</button>
+                      </div>
+                    </div>
                   </div>
                   <div id="articleResults" class="article-results"></div>
                   <div id="articlePagination" class="pagination"></div>

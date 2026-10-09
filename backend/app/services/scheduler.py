@@ -7,6 +7,7 @@ from sqlalchemy import func
 from app.database import SessionLocal
 from app.models.source import Source
 from app.models.source_collection_job import SourceCollectionJob
+from app.services.collection_run import collection_lock
 from app.services.collector import SourceCollectorService
 
 
@@ -41,6 +42,18 @@ def ensure_collection_jobs(db) -> None:
 
 
 def run_due_collection_jobs() -> None:
+    # A manual "Collect latest news" run is already fetching feeds; collecting the same
+    # sources alongside it would race the duplicate check. The next tick picks up anything due.
+    if not collection_lock.acquire(blocking=False):
+        logger.info("Skipping scheduled collection: a manual collection run is in progress")
+        return
+    try:
+        _run_due_collection_jobs()
+    finally:
+        collection_lock.release()
+
+
+def _run_due_collection_jobs() -> None:
     with SessionLocal() as db:
         ensure_collection_jobs(db)
         now = datetime.now(timezone.utc)

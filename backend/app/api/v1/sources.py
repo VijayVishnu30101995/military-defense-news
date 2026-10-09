@@ -11,8 +11,14 @@ from app.schemas.source_collection_job import (
     SourceCollectionJobResponse,
     SourceCollectionJobUpdate,
 )
-from app.schemas.collection import CollectionRunResponse
+from app.schemas.collection import CollectionRunRequest, CollectionRunResponse
 from app.services.article import ArticleService
+from app.services.collection_run import (
+    CollectionAlreadyRunning,
+    collection_lock,
+    latest_run_snapshot,
+    start_collection_run,
+)
 from app.services.collector import SourceCollectorService
 from app.services.source import SourceService
 from app.services.source_collection_job import SourceCollectionJobService
@@ -31,6 +37,26 @@ def list_sources(
 ) -> list[SourceResponse]:
     service = SourceService(db)
     return service.get_all()
+
+
+@router.post(
+    "/collection-runs",
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_admin)],
+)
+def start_collection_run_endpoint(payload: CollectionRunRequest | None = None) -> dict:
+    try:
+        return start_collection_run(payload.source_ids if payload else None)
+    except CollectionAlreadyRunning as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.get(
+    "/collection-runs/latest",
+    dependencies=[Depends(require_admin)],
+)
+def latest_collection_run_endpoint() -> dict:
+    return latest_run_snapshot()
 
 
 @router.get(
@@ -217,6 +243,11 @@ def collect_source_endpoint(
             detail="Source not found",
         )
 
+    if not collection_lock.acquire(blocking=False):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A collection is already in progress. Try again when it finishes.",
+        )
     try:
         return SourceCollectorService(db).collect_source(source_id)
     except ValueError as exc:
@@ -229,6 +260,8 @@ def collect_source_endpoint(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=str(exc),
         ) from exc
+    finally:
+        collection_lock.release()
 
 
 @router.delete(

@@ -27,7 +27,9 @@ const articleCountLabel = document.getElementById('articleCountLabel');
 const articleResults = document.getElementById('articleResults');
 const sourceForm = document.getElementById('sourceForm');
 const sourceTable = document.getElementById('sourceTable');
-const triggerHealthBtn = document.getElementById('triggerHealthBtn');
+const collectAllBtn = document.getElementById('collectAllBtn');
+const collectionStatusEl = document.getElementById('collectionStatus');
+const collectionProgressEl = document.getElementById('collectionProgress');
 const sourceName = document.getElementById('sourceName');
 const sourceWebsite = document.getElementById('sourceWebsite');
 const sourceFeed = document.getElementById('sourceFeed');
@@ -44,6 +46,23 @@ const themeKey = 'defense-brief-theme';
 
 const HEALTH_REFRESH_INTERVAL_MS = 60000; // 60s
 let healthRefreshTimer = null;
+
+const COLLECTION_POLL_INTERVAL_MS = 2000;
+let collectionPollTimer = null;
+let lastCollectionStatus = 'idle';
+const COLLECTION_STATUS = {
+  idle: { label: 'Idle', className: 'status-neutral' },
+  in_progress: { label: 'In progress', className: 'status-info' },
+  completed: { label: 'Completed', className: 'status-ok' },
+  completed_with_errors: { label: 'Completed with errors', className: 'status-warning' },
+  failed: { label: 'Failed', className: 'status-paused' },
+};
+const SOURCE_RUN_STATUS = {
+  pending: { label: 'Waiting', className: 'status-neutral' },
+  running: { label: 'Collecting', className: 'status-info' },
+  succeeded: { label: 'Done', className: 'status-ok' },
+  failed: { label: 'Failed', className: 'status-paused' },
+};
 
 const PAGE_SIZE = 12;
 const state = {
@@ -1020,6 +1039,7 @@ async function startSession() {
 
   if (isAdmin()) {
     startHealthRefresh();
+    pollCollection();
   }
 }
 
@@ -1094,16 +1114,143 @@ async function submitSource(event) {
   }
 }
 
-async function collectSource(sourceId) {
-  try {
-    await api(`/sources/${sourceId}/collect`, {
-      method: 'POST',
-    });
-    await loadDashboard();
-    await loadArticles();
-  } catch (error) {
-    alert(`Unable to collect source: ${error.message}`);
+// Collecting a single source runs through the same tracked collection as "Collect latest
+// news", so its progress shows in the panel and it never overlaps another collection.
+function collectSource(sourceId) {
+  sourceView.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  return startCollection([sourceId]);
+}
+
+function formatClock(value) {
+  return value ? new Date(value).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
+}
+
+function collectionHeadline(run) {
+  const total = run.total_sources;
+  const created = run.articles_created;
+  const newArticles = `${created} new article${created === 1 ? '' : 's'}`;
+  switch (run.status) {
+    case 'in_progress':
+      if (run.waiting) return 'Collection started. Waiting for a scheduled collection to finish first…';
+      return run.current_source
+        ? `Collecting ${run.current_source} · ${run.completed_sources} of ${total} sources done`
+        : `Collection started · ${run.completed_sources} of ${total} sources done`;
+    case 'completed':
+      return total ? `Collection completed: ${newArticles} from ${total} source${total === 1 ? '' : 's'}.` : 'No active sources with a feed to collect.';
+    case 'completed_with_errors':
+      return `Completed with errors: ${run.failed_sources} of ${total} sources failed · ${newArticles}.`;
+    case 'failed':
+      return run.error || 'Collection failed.';
+    default:
+      return 'No collection has run yet. Click “Collect latest news” to fetch every active source.';
   }
+}
+
+function sourceRunDetail(item) {
+  if (item.status === 'failed') return `<span class="run-error">${escapeHtml(item.error || 'Collection failed.')}</span>`;
+  if (item.status === 'succeeded') {
+    const counts = `${item.articles_created} new · ${item.articles_found} in feed`;
+    return item.warning ? `${escapeHtml(counts)} · <span class="run-warning">${escapeHtml(item.warning)}</span>` : escapeHtml(counts);
+  }
+  return '';
+}
+
+function renderCollectionRun(run) {
+  const status = COLLECTION_STATUS[run.status] || COLLECTION_STATUS.idle;
+  const inProgress = run.status === 'in_progress';
+  collectionStatusEl.className = `status-pill ${status.className}`;
+  collectionStatusEl.textContent = status.label;
+  collectAllBtn.disabled = inProgress;
+  collectAllBtn.textContent = inProgress ? 'Collecting…' : 'Collect latest news';
+
+  if (run.status === 'idle') {
+    collectionProgressEl.innerHTML = `<p class="collection-summary">${escapeHtml(collectionHeadline(run))}</p>`;
+    return;
+  }
+
+  const total = run.total_sources || 0;
+  const percent = total ? Math.round((run.completed_sources / total) * 100) : 100;
+  const timing = run.finished_at
+    ? `Started ${formatClock(run.started_at)} · Finished ${formatClock(run.finished_at)}`
+    : `Started ${formatClock(run.started_at)}`;
+  const failedIds = (run.sources || []).filter((item) => item.status === 'failed').map((item) => item.source_id);
+
+  collectionProgressEl.innerHTML = `
+    <p class="collection-summary">${escapeHtml(collectionHeadline(run))}</p>
+    <div class="collection-bar" role="progressbar" aria-label="Sources completed" aria-valuemin="0" aria-valuemax="${total}" aria-valuenow="${run.completed_sources}">
+      <span style="width: ${percent}%"></span>
+    </div>
+    <dl class="collection-stats">
+      <div><dt>Sources done</dt><dd>${run.completed_sources} / ${total}</dd></div>
+      <div><dt>New articles</dt><dd>${run.articles_created}</dd></div>
+      <div><dt>Failed</dt><dd class="${run.failed_sources ? 'is-failed' : ''}">${run.failed_sources}</dd></div>
+      <div><dt>Time</dt><dd>${escapeHtml(timing)}</dd></div>
+    </dl>
+    ${(run.sources || []).length ? `<ul class="collection-sources">
+      ${run.sources.map((item) => {
+        const itemStatus = SOURCE_RUN_STATUS[item.status] || SOURCE_RUN_STATUS.pending;
+        return `<li>
+          <span class="status-pill ${itemStatus.className}">${itemStatus.label}</span>
+          <strong>${escapeHtml(item.name)}</strong>
+          <span class="collection-source-detail">${sourceRunDetail(item)}</span>
+        </li>`;
+      }).join('')}
+    </ul>` : ''}
+    ${!inProgress && failedIds.length
+      ? `<button type="button" class="secondary" data-retry-sources="${failedIds.join(',')}">Retry failed source${failedIds.length === 1 ? '' : 's'} (${failedIds.length})</button>`
+      : ''}
+  `;
+}
+
+async function startCollection(sourceIds = null) {
+  collectAllBtn.disabled = true;
+  try {
+    const run = await api('/sources/collection-runs', {
+      method: 'POST',
+      body: JSON.stringify(sourceIds ? { source_ids: sourceIds } : {}),
+    });
+    lastCollectionStatus = run.status;
+    renderCollectionRun(run);
+  } catch (error) {
+    // Another collection is already running: show its progress instead of an error, but
+    // say so when a single source was asked for, since it is not added to that run.
+    if (!error.message.includes('already in progress')) {
+      alert(`Unable to start collection: ${error.message}`);
+    } else if (sourceIds) {
+      alert('A collection is already in progress. Collect this source again once it finishes.');
+    }
+  }
+  await pollCollection();
+}
+
+async function pollCollection() {
+  clearTimeout(collectionPollTimer);
+  collectionPollTimer = null;
+  let run;
+  try {
+    run = await api('/sources/collection-runs/latest');
+  } catch (error) {
+    if (!getToken()) return;
+    console.warn('Unable to load collection status', error);
+    collectionPollTimer = setTimeout(pollCollection, COLLECTION_POLL_INTERVAL_MS * 3);
+    return;
+  }
+
+  const wasRunning = lastCollectionStatus === 'in_progress';
+  lastCollectionStatus = run.status;
+  renderCollectionRun(run);
+
+  if (run.status === 'in_progress') {
+    collectionPollTimer = setTimeout(pollCollection, COLLECTION_POLL_INTERVAL_MS);
+  } else if (wasRunning) {
+    await Promise.all([refreshSourcesAndHealth(), loadDashboard(), loadArticles()]);
+  }
+}
+
+function stopCollectionPolling() {
+  clearTimeout(collectionPollTimer);
+  collectionPollTimer = null;
+  lastCollectionStatus = 'idle';
 }
 
 function resetFilters() {
@@ -1171,6 +1318,7 @@ function logout() {
   setToken(null);
   setCurrentUser(null);
   stopHealthRefresh();
+  stopCollectionPolling();
   authCard.classList.remove('hidden');
   dashboardEl.classList.add('hidden');
   logoutBtn.classList.add('hidden');
@@ -1197,6 +1345,11 @@ loginForm.addEventListener('submit', login);
 logoutBtn.addEventListener('click', logout);
 generateBriefBtn.addEventListener('click', generateBrief);
 sourceForm.addEventListener('submit', submitSource);
+collectAllBtn.addEventListener('click', () => startCollection());
+collectionProgressEl.addEventListener('click', (event) => {
+  const retry = event.target.closest('[data-retry-sources]');
+  if (retry) startCollection(retry.dataset.retrySources.split(',').map(Number));
+});
 resetFiltersBtn.addEventListener('click', resetFilters);
 let searchDebounceTimer = null;
 searchInput.addEventListener('input', () => {
@@ -1255,111 +1408,6 @@ sourceTable.addEventListener('click', (event) => {
     deleteSource(Number(deleteButton.dataset.deleteSource));
   }
 });
-
-// Manual trigger for health alerts
-if (triggerHealthBtn) {
-  triggerHealthBtn.addEventListener('click', async () => {
-    try {
-      triggerHealthBtn.disabled = true;
-      const orig = triggerHealthBtn.textContent;
-      triggerHealthBtn.textContent = 'Checking...';
-      const result = await api('/sources/health/trigger', { method: 'POST' });
-
-      // Show in-app modal summary instead of alert()
-      const modal = document.getElementById('sourceHealthModal');
-      const content = document.getElementById('sourceHealthContent');
-      content.innerHTML = `
-        <div class="article-detail-hero plain">
-          <div class="article-detail-overlay">
-            <p class="eyebrow">Health check</p>
-            <h3 id="sourceHealthTitle">Manual health alert results</h3>
-          </div>
-        </div>
-        <div class="article-detail-body">
-          <div class="article-detail-section">
-            <h4>Summary</h4>
-            <p>Total sources: <strong>${escapeHtml(String(result.total_sources ?? 0))}</strong></p>
-            <p>Critical: <strong>${escapeHtml(String(result.critical_count ?? 0))}</strong> (threshold ${escapeHtml(String(result.threshold ?? '-'))})</p>
-            <p>Email sent: <strong>${escapeHtml(String(result.sent ?? false))}</strong></p>
-          </div>
-          <div class="article-detail-section">
-            <h4>Actions</h4>
-            <div class="article-detail-actions">
-              <button id="viewAffectedBtn" type="button" class="secondary">View affected sources</button>
-            </div>
-          </div>
-        </div>
-      `;
-
-      // attach handler for viewing detailed affected sources
-      const attachView = () => {
-        const viewBtn = document.getElementById('viewAffectedBtn');
-        if (!viewBtn) return;
-        viewBtn.addEventListener('click', async () => {
-          try {
-            viewBtn.disabled = true;
-            viewBtn.textContent = 'Loading...';
-            const healths = await api('/sources/health/all');
-            // group by status
-            const groups = { critical: [], warning: [], paused: [], ok: [] };
-            (Array.isArray(healths) ? healths : []).forEach((h) => {
-              const s = h.status || 'ok';
-              if (!groups[s]) groups[s] = [];
-              groups[s].push(h);
-            });
-
-            const listHtml = Object.entries(groups).map(([status, items]) => {
-              if (!items.length) return '';
-              const title = status.charAt(0).toUpperCase() + status.slice(1);
-              const rows = items.map((it) => `
-                <div class="alert-source-row">
-                  <strong>${escapeHtml(it.name || 'Unknown')}</strong>
-                  <div class="alert-pill alert-${escapeHtml(status)}">${escapeHtml(status)}</div>
-                  <div class="alert-meta">Last success: ${it.last_success_at ? escapeHtml(new Date(it.last_success_at).toLocaleString()) : 'Never'}</div>
-                </div>
-              `).join('');
-              return `<div class="alerts-group"><h4>${escapeHtml(title)} (${items.length})</h4>${rows}</div>`;
-            }).join('');
-
-            content.innerHTML = `
-              <div class="article-detail-hero plain">
-                <div class="article-detail-overlay">
-                  <p class="eyebrow">Affected sources</p>
-                  <h3 id="sourceHealthTitle">Health details</h3>
-                </div>
-              </div>
-              <div class="article-detail-body">
-                ${listHtml || '<p>No affected sources found.</p>'}
-                <div style="margin-top:12px;" class="article-detail-actions"><button id="closeHealthFromSummary" type="button" class="secondary">Close</button></div>
-              </div>
-            `;
-
-            const closeBtn = document.getElementById('closeHealthFromSummary');
-            if (closeBtn) closeBtn.addEventListener('click', () => closeSourceHealthModal());
-          } catch (err) {
-            alert(`Unable to load affected sources: ${err.message || err}`);
-          } finally {
-            try { viewBtn.disabled = false; viewBtn.textContent = 'View affected sources'; } catch (e) {}
-          }
-        });
-      };
-
-      modal.classList.remove('hidden');
-      modal.setAttribute('aria-hidden', 'false');
-      // attach after showing so the element exists
-      attachView();
-
-      // refresh UI health state in background
-      await refreshSourcesAndHealth();
-
-      triggerHealthBtn.textContent = orig;
-    } catch (e) {
-      alert(`Failed to trigger health alert: ${e.message || e}`);
-    } finally {
-      try { triggerHealthBtn.disabled = false; } catch (e) {}
-    }
-  });
-}
 
 const clearNewsBtn = document.getElementById('clearNewsBtn');
 if (clearNewsBtn) {

@@ -491,7 +491,7 @@ class SourceCollectorService:
                 source_id,
                 SourceCollectionJobCreate(
                     is_enabled=True,
-                    interval_minutes=360,
+                    interval_minutes=(source.collection_frequency if source else None) or 360,
                     next_run_at=None,
                 ),
             )

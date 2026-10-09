@@ -12,6 +12,9 @@ from app.models.source import Source
 from app.schemas.article import ArticleCreate
 
 
+MIN_TITLE_WORDS_FOR_MATCH = 6
+
+
 class ArticleRepository:
     def __init__(self, db: Session):
         self.db = db
@@ -47,8 +50,10 @@ class ArticleRepository:
 
     @staticmethod
     def normalize_title(title: str) -> str:
-        text = title.strip().lower()
-        text = re.sub(r"[^a-z0-9\s]", " ", text)
+        # \w is Unicode-aware, so Arabic, Cyrillic and Devanagari titles keep their letters
+        # instead of collapsing to "" and matching each other.
+        text = title.strip().casefold()
+        text = re.sub(r"[^\w\s]|_", " ", text)
         text = re.sub(r"\s+", " ", text)
         return text.strip()
 
@@ -72,35 +77,21 @@ class ArticleRepository:
             candidate_urls.add(canonical_url)
             candidate_urls.add(self.normalize_url(canonical_url))
 
-        queryset = self.db.query(Article).filter(
-            or_(
-                Article.original_url.in_(sorted(candidate_urls)),
-                Article.canonical_url.in_(sorted(candidate_urls)),
-                Article.normalized_title == normalized_title,
-            )
+        conditions = [
+            Article.original_url.in_(sorted(candidate_urls)),
+            Article.canonical_url.in_(sorted(candidate_urls)),
+        ]
+        # Short titles ("Morning Brief", "Bunker Talk") recur with different stories, so only
+        # titles long enough to be specific count as a duplicate; URLs always do.
+        if len(normalized_title.split()) >= MIN_TITLE_WORDS_FOR_MATCH:
+            conditions.append(Article.normalized_title == normalized_title)
+
+        return (
+            self.db.query(Article)
+            .filter(or_(*conditions))
+            .order_by(Article.id.desc())
+            .first()
         )
-
-        for article in queryset.order_by(Article.id.desc()).all():
-            if article.source_id != source_id and article.normalized_title != normalized_title:
-                url_matches = (
-                    article.original_url in candidate_urls or
-                    (article.canonical_url and article.canonical_url in candidate_urls) or
-                    self.normalize_url(article.original_url) in candidate_urls or
-                    (article.canonical_url and self.normalize_url(article.canonical_url) in candidate_urls)
-                )
-                if not url_matches:
-                    continue
-
-            if (
-                article.original_url in candidate_urls
-                or (article.canonical_url and article.canonical_url in candidate_urls)
-                or article.normalized_title == normalized_title
-                or self.normalize_url(article.original_url) in candidate_urls
-                or (article.canonical_url and self.normalize_url(article.canonical_url) in candidate_urls)
-            ):
-                return article
-
-        return None
 
     def get_all(
         self,

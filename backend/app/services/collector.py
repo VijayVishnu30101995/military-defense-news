@@ -50,6 +50,19 @@ JSON_LD_PATTERN = re.compile(
 # carry images that belong to other pages.
 ARTICLE_TYPE_PATTERN = re.compile(r"Article|Posting", re.IGNORECASE)
 
+# A story with no photo of its own may show another outlet's photo of the same story. The
+# match is deliberately strict (most significant headline words shared, published close
+# together) because two reports of different strikes in the same city share a lot of words,
+# and a photograph of the wrong event is worse than none.
+IMAGE_BORROW_MIN_SIMILARITY = 0.5
+IMAGE_BORROW_MIN_SHARED_WORDS = 4
+IMAGE_BORROW_WINDOW = timedelta(hours=48)
+IMAGE_BORROW_LOOKBACK = timedelta(days=3)
+HEADLINE_STOPWORDS = frozenset(
+    "the and for with from into over after amid about against says said say its their his her "
+    "this that than are was were has have had will would could new".split()
+)
+
 ATOM_NS = "http://www.w3.org/2005/Atom"
 CONTENT_NS = "http://purl.org/rss/1.0/modules/content/"
 DC_NS = "http://purl.org/dc/elements/1.1/"
@@ -411,6 +424,65 @@ class SourceCollectorService:
         return changed
 
     @staticmethod
+    def _headline_words(title: str) -> set[str]:
+        return {
+            word for word in re.findall(r"\w+", title.casefold())
+            if len(word) > 2 and word not in HEADLINE_STOPWORDS
+        }
+
+    def borrow_missing_images(self) -> int:
+        """Give recent photo-less stories the photo from another outlet's report of the same story.
+
+        Reuters (via Google News) blocks page fetches, so its stories never get a photo of their
+        own. Runs after each collection so a match can come from either side arriving later.
+        Returns how many stories received a photo.
+        """
+        now = datetime.now(timezone.utc)
+        targets = (
+            self.db.query(Article)
+            .filter(Article.image_url.is_(None))
+            .filter(Article.published_at >= now - IMAGE_BORROW_LOOKBACK)
+            .all()
+        )
+        if not targets:
+            return 0
+
+        # Only stories with their own photo lend one, so a borrowed photo is never passed on.
+        donors = (
+            self.db.query(Article)
+            .filter(Article.image_url.isnot(None))
+            .filter(Article.image_credit.is_(None))
+            .filter(Article.published_at >= now - IMAGE_BORROW_LOOKBACK - IMAGE_BORROW_WINDOW)
+            .all()
+        )
+        donor_words = [(donor, self._headline_words(donor.title)) for donor in donors]
+        source_names = {source_id: name for source_id, name in self.db.query(Source.id, Source.name)}
+
+        changed = 0
+        for target in targets:
+            words = self._headline_words(target.title)
+            best, best_similarity = None, 0.0
+            for donor, other in donor_words:
+                if donor.source_id == target.source_id:
+                    continue
+                if abs(donor.published_at - target.published_at) > IMAGE_BORROW_WINDOW:
+                    continue
+                shared = len(words & other)
+                if shared < IMAGE_BORROW_MIN_SHARED_WORDS:
+                    continue
+                similarity = shared / len(words | other)
+                if similarity >= IMAGE_BORROW_MIN_SIMILARITY and similarity > best_similarity:
+                    best, best_similarity = donor, similarity
+            if best is not None:
+                target.image_url = best.image_url
+                target.image_credit = source_names.get(best.source_id)
+                changed += 1
+
+        if changed:
+            self.db.commit()
+        return changed
+
+    @staticmethod
     def _count_feed_entries(root: ElementTree.Element) -> int:
         return sum(1 for item in root.iter() if item.tag.rsplit("}", 1)[-1] in ("item", "entry"))
 
@@ -432,6 +504,11 @@ class SourceCollectorService:
                         break
             if title_tag is not None:
                 title = self._safe_text(title_tag)
+            # Aggregators (Google News) append " - Reuters" to every headline. Without the
+            # suffix the headline matches the same wire story republished by another outlet.
+            publisher = self._safe_text(item.find("source"))
+            if title and publisher and title.endswith(f" - {publisher}"):
+                title = title[: -len(f" - {publisher}")].rstrip()
 
             link = self._extract_link(item, fallback_url=fallback_base_url)
             image_url = self._extract_image_url(item, fallback_base_url=fallback_base_url)
@@ -610,6 +687,8 @@ class SourceCollectorService:
                     image_url = self._best_article_image(link, item, source)
                     if image_url:
                         duplicate.image_url = image_url
+                        # The same wire story from another outlet: its page supplied the photo.
+                        duplicate.image_credit = source.name if duplicate.source_id != source.id else None
                 if not duplicate.summary and item.get("summary"):
                     duplicate.summary = item.get("summary")
                 if not duplicate.description and item.get("summary"):
@@ -653,6 +732,15 @@ class SourceCollectorService:
             # which otherwise can't see uncommitted adds on this autoflush=False session.
             self.db.flush()
             created += 1
+
+        try:
+            borrowed = self.borrow_missing_images()
+            if borrowed:
+                logger.info("Source %s (%s): %d photo-less stories took a matching story's photo", source_id, source.name, borrowed)
+        except Exception:
+            # Never let photo matching fail a collection run that already stored its stories.
+            logger.exception("Borrowing images failed after collecting source %s", source_id)
+            self.db.rollback()
 
         # The run still counts as a success (the feed was reachable and parsed), but an
         # empty or mostly-unusable feed is recorded as a warning so admins can see why

@@ -1969,6 +1969,13 @@ button.close-modal:hover { border-color: var(--accent); color: var(--accent); }
 
 .article-byline strong { color: var(--text); font-weight: 600; }
 
+.photo-credit {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
 .article-standfirst {
   margin: 0;
   font-size: 1.12rem;

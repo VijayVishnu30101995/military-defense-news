@@ -69,6 +69,12 @@ class Article(Base):
         nullable=True,
     )
 
+    # Set when image_url is another outlet's photo of the same story: that outlet's name.
+    image_credit: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
     language: Mapped[str] = mapped_column(
         String(10),
         nullable=False,

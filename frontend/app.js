@@ -737,6 +737,7 @@ function openArticleDetail(articleId) {
             ${categories.map((category) => `<span class="story-tag">${escapeHtml(category)}</span>`).join('')}
           </div>
           <p class="article-byline">${byline}</p>
+          ${article.image_credit ? `<p class="photo-credit">Photo: ${escapeHtml(article.image_credit)}, from its report of the same story</p>` : ''}
           ${summary ? `<p class="article-standfirst">${escapeHtml(summary)}</p>` : ''}
           ${paragraphs.length
             ? `<div class="article-body-text">${paragraphs.map((p) => `<p>${escapeHtml(p)}</p>`).join('')}</div>`

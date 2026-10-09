@@ -770,4 +770,5 @@ class SourceCollectorService:
             articles_created=created,
             status="SUCCESS",
             message=f"Processed {len(items)} feed items and created {created} articles." + (f" Warning: {warning}" if warning else ""),
+            warning=warning,
         )

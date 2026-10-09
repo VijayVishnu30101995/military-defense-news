@@ -180,6 +180,21 @@
           </div>
 
           <div id="sourceView" class="view-panel hidden admin-only">
+            <section class="card collection-panel" aria-labelledby="collectionTitle">
+              <div class="collection-head">
+                <div>
+                  <p class="eyebrow">Collection</p>
+                  <h2 id="collectionTitle">Collect latest news</h2>
+                  <p class="collection-hint">Fetches every active source. Stories already stored are skipped, so running it again never creates duplicates.</p>
+                </div>
+                <div class="collection-actions">
+                  <span id="collectionStatus" class="status-pill status-neutral">Idle</span>
+                  <button id="collectAllBtn" type="button">Collect latest news</button>
+                </div>
+              </div>
+              <div id="collectionProgress" class="collection-progress" aria-live="polite"></div>
+            </section>
+
             <section class="card source-management-panel">
               <div class="card-header split">
                 <div>
@@ -187,7 +202,6 @@
                   <h2>Source management</h2>
                 </div>
                 <div class="header-button-row">
-                  <button id="triggerHealthBtn" type="button" class="secondary">Trigger health alert</button>
                   <button id="clearNewsBtn" type="button" class="secondary danger-btn">Clear all news</button>
                   <button type="button" class="secondary" data-view-switch="dashboard">Back to dashboard</button>
                 </div>

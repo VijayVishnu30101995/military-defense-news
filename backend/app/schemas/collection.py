@@ -7,3 +7,9 @@ class CollectionRunResponse(BaseModel):
     articles_created: int
     status: str
     message: str
+    warning: str | None = None
+
+
+class CollectionRunRequest(BaseModel):
+    # None collects every active source with a feed; a list retries just those sources.
+    source_ids: list[int] | None = None

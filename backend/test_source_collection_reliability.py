@@ -282,3 +282,68 @@ def test_find_duplicate_matches_same_url_or_specific_title() -> None:
         db.delete(second)
         db.commit()
         db.close()
+
+
+def test_feed_parser_strips_aggregator_publisher_suffix() -> None:
+    xml = """
+    <rss><channel>
+      <item>
+        <title>Lithuania says it would pay the cost if US establishes military base - Reuters</title>
+        <link>https://news.google.com/rss/articles/abc</link>
+        <source url="https://www.reuters.com">Reuters</source>
+      </item>
+      <item>
+        <title>Ukraine strikes refinery - Reuters reports</title>
+        <link>https://example.com/story</link>
+      </item>
+    </channel></rss>
+    """
+    items = SourceCollectorService(SessionLocal())._find_feed_items(ElementTree.fromstring(xml))
+
+    assert items[0]["title"] == "Lithuania says it would pay the cost if US establishes military base"
+    assert items[1]["title"] == "Ukraine strikes refinery - Reuters reports"
+
+
+def test_borrow_missing_images_uses_only_strong_matches_from_other_sources() -> None:
+    from app.models.article import Article
+
+    db = SessionLocal()
+    wire = _make_source(db, "Wire Without Photos")
+    outlet = _make_source(db, "Outlet With Photos")
+    now = datetime.now(timezone.utc)
+    tag = uuid4().hex[:8]
+
+    def article(source, title, image_url=None):
+        row = Article(
+            source_id=source.id,
+            title=title,
+            normalized_title=ArticleRepository.normalize_title(title),
+            original_url=f"https://example.com/{uuid4().hex}",
+            image_url=image_url,
+            published_at=now,
+        )
+        db.add(row)
+        return row
+
+    try:
+        article(outlet, f"Yemeni government launches offensive against Houthis {tag}", "https://img.example.com/yemen.jpg")
+        article(outlet, f"Israeli attacks across Gaza kill at least four Palestinians {tag}", "https://img.example.com/gaza.jpg")
+        same_story = article(wire, f"Yemeni government launches offensive against Houthis {tag}")
+        different_event = article(wire, f"Israeli strikes kill two people in Gaza, medics say {tag}")
+        same_source = article(outlet, f"Yemeni government launches offensive against Houthis {tag} again")
+        db.commit()
+
+        SourceCollectorService(db).borrow_missing_images()
+        for row in (same_story, different_event, same_source):
+            db.refresh(row)
+
+        assert same_story.image_url == "https://img.example.com/yemen.jpg"
+        assert same_story.image_credit == outlet.name
+        assert different_event.image_url is None
+        assert same_source.image_url is None
+    finally:
+        db.rollback()
+        db.delete(wire)
+        db.delete(outlet)
+        db.commit()
+        db.close()

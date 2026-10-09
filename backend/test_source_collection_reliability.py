@@ -171,3 +171,114 @@ def test_collect_source_warns_when_entries_have_no_usable_link(monkeypatch) -> N
     assert result.articles_found == 0
     assert status == "SUCCESS"
     assert error_message == "Feed contained 2 entries but none had a usable title and link."
+
+
+def test_run_due_collection_jobs_schedules_sources_without_a_job(monkeypatch) -> None:
+    db = SessionLocal()
+    source = Source(
+        name=f"Unscheduled Feed Example {uuid4().hex[:8]}",
+        website_url="https://example.com",
+        feed_url="https://example.com/rss.xml",
+        source_type="rss",
+        is_active=True,
+        collection_frequency=180,
+    )
+    db.add(source)
+    db.commit()
+    db.refresh(source)
+
+    collected: list[int] = []
+
+    def fake_collect(_self, source_id: int):
+        collected.append(source_id)
+
+    import app.services.scheduler as scheduler_module
+
+    monkeypatch.setattr(scheduler_module.SourceCollectorService, "collect_source", fake_collect)
+
+    try:
+        run_due_collection_jobs()
+        job = db.query(SourceCollectionJob).filter(SourceCollectionJob.source_id == source.id).first()
+        assert job is not None
+        assert job.interval_minutes == 180
+        assert source.id in collected
+    finally:
+        db.delete(source)
+        db.commit()
+        db.close()
+
+
+def test_normalize_title_keeps_non_latin_letters() -> None:
+    assert ArticleRepository.normalize_title("Мир и война: обзор") == "мир и война обзор"
+    assert ArticleRepository.normalize_title("भारत ने नया मिसाइल परीक्षण किया") != ""
+    assert ArticleRepository.normalize_title("Морской флот") != ArticleRepository.normalize_title("Сухопутные войска")
+
+
+def _make_source(db, label: str) -> Source:
+    source = Source(
+        name=f"{label} {uuid4().hex[:8]}",
+        website_url="https://example.com",
+        feed_url="https://example.com/rss.xml",
+        source_type="rss",
+        is_active=True,
+    )
+    db.add(source)
+    db.commit()
+    db.refresh(source)
+    return source
+
+
+def test_find_duplicate_ignores_short_recurring_titles() -> None:
+    from app.schemas.article import ArticleCreate
+
+    db = SessionLocal()
+    source = _make_source(db, "Short Title Example")
+    repository = ArticleRepository(db)
+    try:
+        repository.create(ArticleCreate(
+            source_id=source.id,
+            title="Morning Brief",
+            original_url=f"https://example.com/{uuid4().hex}",
+        ))
+        assert repository.find_duplicate(
+            source_id=source.id,
+            title="Morning Brief",
+            original_url=f"https://example.com/{uuid4().hex}",
+            canonical_url=None,
+        ) is None
+    finally:
+        db.delete(source)
+        db.commit()
+        db.close()
+
+
+def test_find_duplicate_matches_same_url_or_specific_title() -> None:
+    from app.schemas.article import ArticleCreate
+
+    db = SessionLocal()
+    first = _make_source(db, "Wire Example")
+    second = _make_source(db, "Syndication Example")
+    repository = ArticleRepository(db)
+    title = f"Pentagon awards {uuid4().hex[:8]} contract for next generation interceptors"
+    url = f"https://example.com/{uuid4().hex}"
+    try:
+        stored = repository.create(ArticleCreate(source_id=first.id, title=title, original_url=url))
+        # Same URL with tracking parameters is the same story.
+        assert repository.find_duplicate(
+            source_id=first.id,
+            title="Different headline entirely",
+            original_url=f"{url}?utm_source=feed",
+            canonical_url=None,
+        ).id == stored.id
+        # A long, specific headline from another outlet is the same wire story.
+        assert repository.find_duplicate(
+            source_id=second.id,
+            title=title,
+            original_url=f"https://other.example.com/{uuid4().hex}",
+            canonical_url=None,
+        ).id == stored.id
+    finally:
+        db.delete(first)
+        db.delete(second)
+        db.commit()
+        db.close()

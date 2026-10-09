@@ -14,8 +14,35 @@ logger = logging.getLogger(__name__)
 scheduler = BackgroundScheduler()
 
 
+def ensure_collection_jobs(db) -> None:
+    """Give every active source with a feed a collection job so the scheduler picks it up.
+
+    Seeded and newly added sources start without one; next_run_at=None makes them due at once.
+    """
+    missing = (
+        db.query(Source)
+        .outerjoin(SourceCollectionJob, SourceCollectionJob.source_id == Source.id)
+        .filter(SourceCollectionJob.id.is_(None))
+        .filter(Source.is_active.is_(True))
+        .filter(Source.feed_url.isnot(None))
+        .all()
+    )
+    for source in missing:
+        db.add(
+            SourceCollectionJob(
+                source_id=source.id,
+                is_enabled=True,
+                interval_minutes=source.collection_frequency or 360,
+                next_run_at=None,
+            )
+        )
+    if missing:
+        db.commit()
+
+
 def run_due_collection_jobs() -> None:
     with SessionLocal() as db:
+        ensure_collection_jobs(db)
         now = datetime.now(timezone.utc)
         due_jobs = (
             db.query(SourceCollectionJob)

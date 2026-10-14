@@ -7,6 +7,7 @@ from sqlalchemy import text
 from app.api.v1.articles import router as articles_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.health import router as health_router
+from app.api.v1.reports import router as reports_router
 from app.api.v1.sources import router as sources_router
 from app.api.v1.users import router as users_router
 from app.api.dependencies import get_current_user
@@ -68,6 +69,11 @@ app.include_router(
 
 app.include_router(
     users_router,
+    prefix="/api/v1",
+)
+
+app.include_router(
+    reports_router,
     prefix="/api/v1",
 )
 

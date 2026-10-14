@@ -128,6 +128,11 @@
                       <select id="sourceFilter" aria-label="Source">
                         <option value="">All sources</option>
                       </select>
+                      <div class="date-range" role="group" aria-label="Publication date">
+                        <input id="dateFromFilter" type="date" aria-label="Published from" title="Published from" />
+                        <span aria-hidden="true">to</span>
+                        <input id="dateToFilter" type="date" aria-label="Published to" title="Published to" />
+                      </div>
                     </div>
                     <button id="resetFiltersBtn" class="secondary" type="button">Reset</button>
                     <select id="categoryFilter" class="hidden" aria-label="Category">
@@ -144,6 +149,14 @@
                         <button type="button" class="secondary small-btn" data-results-view="cards" aria-pressed="true">Cards</button>
                         <button type="button" class="secondary small-btn" data-results-view="list" aria-pressed="false">List</button>
                       </div>
+                    </div>
+                  </div>
+                  <div id="selectionBar" class="selection-bar">
+                    <span class="selection-count" aria-live="polite"><strong id="selectionCount">0</strong> selected for report</span>
+                    <div class="selection-actions">
+                      <button type="button" id="selectAllBtn" class="secondary small-btn">Select all</button>
+                      <button type="button" id="deselectAllBtn" class="secondary small-btn">Deselect all</button>
+                      <button type="button" id="openReportBtn" class="small-btn" disabled>Review &amp; build report</button>
                     </div>
                   </div>
                   <div id="articleResults" class="article-results"></div>
@@ -281,6 +294,73 @@
       <div class="modal-panel card" role="dialog" aria-modal="true" aria-labelledby="articleDetailTitle">
         <button id="closeModalBtn" class="secondary close-modal" type="button">Close</button>
         <div id="articleDetailContent"></div>
+      </div>
+    </div>
+
+    <div id="reportModal" class="modal hidden" aria-hidden="true">
+      <div class="modal-backdrop" data-close-report="true"></div>
+      <div class="modal-panel card report-panel" role="dialog" aria-modal="true" aria-labelledby="reportModalTitle">
+        <button id="closeReportBtn" class="secondary close-modal" type="button">Close</button>
+        <div class="report-builder">
+          <div class="report-setup">
+            <header class="report-head">
+              <p class="eyebrow">Custom report</p>
+              <h2 id="reportModalTitle">Build a defence news report</h2>
+            </header>
+
+            <form id="reportForm" class="report-form">
+              <label>Report title
+                <input id="reportTitle" type="text" maxlength="150" required value="Daily Defence News Report" />
+              </label>
+              <div class="report-row">
+                <label>From
+                  <input id="reportDateFrom" type="date" />
+                </label>
+                <label>To
+                  <input id="reportDateTo" type="date" />
+                </label>
+                <label>Order
+                  <select id="reportOrder">
+                    <option value="newest">Newest first</option>
+                    <option value="oldest">Oldest first</option>
+                    <option value="custom">My order</option>
+                  </select>
+                </label>
+              </div>
+              <fieldset class="report-options">
+                <legend>Include for each article</legend>
+                <label class="check"><input type="checkbox" id="optSummary" checked /> Summary</label>
+                <label class="check"><input type="checkbox" id="optDates" checked /> Publication date</label>
+                <label class="check"><input type="checkbox" id="optSources" checked /> Source name</label>
+                <label class="check"><input type="checkbox" id="optImages" checked /> Image</label>
+                <label class="check"><input type="checkbox" id="optLinks" checked /> Original link</label>
+              </fieldset>
+            </form>
+
+            <section class="report-selection" aria-labelledby="reportSelectionTitle">
+              <div class="report-selection-head">
+                <h3 id="reportSelectionTitle">Selected articles <span id="reportSelectedCount"></span></h3>
+                <button type="button" id="clearSelectionBtn" class="link">Clear all</button>
+              </div>
+              <p id="reportNote" class="report-note hidden" role="status"></p>
+              <ol id="reportArticleList" class="report-article-list"></ol>
+            </section>
+
+            <div class="report-actions">
+              <button type="button" id="previewReportBtn" class="secondary">Preview</button>
+              <button type="button" id="downloadReportBtn">Download PDF</button>
+            </div>
+          </div>
+
+          <section class="report-preview" aria-label="Report preview">
+            <div class="report-preview-head">
+              <span class="eyebrow">Preview</span>
+              <a id="reportPreviewLink" class="hidden" target="_blank" rel="noopener">Open in new tab</a>
+            </div>
+            <div id="reportPreviewEmpty" class="report-preview-empty">Choose your options, then select Preview to see the report here.</div>
+            <iframe id="reportPreviewFrame" class="hidden" title="Report preview"></iframe>
+          </section>
+        </div>
       </div>
     </div>
 

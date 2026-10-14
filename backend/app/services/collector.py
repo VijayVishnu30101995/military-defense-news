@@ -295,7 +295,8 @@ class SourceCollectorService:
         """Normalize a candidate image URL, or return None if it is not worth storing."""
         if not candidate:
             return None
-        cleaned = candidate.strip()
+        # Page metadata is HTML, so a URL read from it still has its &amp; entities.
+        cleaned = unescape(candidate).strip()
         if not cleaned:
             return None
 
@@ -371,7 +372,7 @@ class SourceCollectorService:
                 continue
             # The bare <img> scan matches site furniture as readily as article art, so
             # every candidate goes through the junk screen.
-            usable = SourceCollectorService._usable_image_url(unescape(src.group(1)), fallback_base_url)
+            usable = SourceCollectorService._usable_image_url(src.group(1), fallback_base_url)
             if usable:
                 return usable
         return None

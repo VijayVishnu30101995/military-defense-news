@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 from xml.etree import ElementTree
 
@@ -355,3 +355,61 @@ def test_feed_summary_drops_joomla_placeholders() -> None:
     assert clean_summary("{loadposition bannertop} {loadposition sidebarpub} On October 12, the Pentagon") == (
         "On October 12, the Pentagon"
     )
+
+
+def test_syndicated_photos_search_each_shown_story_once(monkeypatch) -> None:
+    import app.services.collector as collector_module
+    from app.models.article import Article
+
+    db = SessionLocal()
+    wire = _make_source(db, "Wire Blocking Pages")
+    now = datetime.now(timezone.utc)
+    searched = []
+
+    def fake_find(collector, title, publisher_host):
+        searched.append((title, publisher_host))
+        return ("https://img.example.com/copy.jpg", "Yahoo News") if "found" in title else None
+
+    monkeypatch.setattr(collector_module, "find_syndicated_photo", fake_find)
+
+    def article(title, relevance=80, image_url=None, published_at=now):
+        row = Article(
+            source_id=wire.id,
+            title=title,
+            normalized_title=ArticleRepository.normalize_title(title),
+            original_url=f"https://example.com/{uuid4().hex}",
+            image_url=image_url,
+            relevance_score=relevance,
+            published_at=published_at,
+        )
+        db.add(row)
+        return row
+
+    try:
+        found = article("Copy found for this story")
+        missing = article("No copy anywhere for this story")
+        hidden = article("Below threshold story", relevance=0)
+        has_photo = article("Story already has its photo", image_url="https://img.example.com/own.jpg")
+        old = article("Story from last month", published_at=now - timedelta(days=30))
+        db.commit()
+
+        service = SourceCollectorService(db)
+        assert service.borrow_syndicated_photos(wire) == 1
+        for row in (found, missing, hidden, has_photo, old):
+            db.refresh(row)
+
+        assert sorted(title for title, _ in searched) == ["Copy found for this story", "No copy anywhere for this story"]
+        assert {host for _, host in searched} == {"example.com"}
+        assert (found.image_url, found.image_credit) == ("https://img.example.com/copy.jpg", "Yahoo News")
+        assert missing.image_url is None and missing.image_lookup_at is not None
+        assert hidden.image_lookup_at is None and old.image_lookup_at is None
+
+        # A story already searched is not searched again on the next run.
+        searched.clear()
+        assert service.borrow_syndicated_photos(wire) == 0
+        assert searched == []
+    finally:
+        db.rollback()
+        db.delete(wire)
+        db.commit()
+        db.close()

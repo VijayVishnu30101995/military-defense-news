@@ -75,6 +75,13 @@ class Article(Base):
         nullable=True,
     )
 
+    # When the story was searched for in other outlets' copies, so a photo-less story is
+    # searched once rather than on every collection run.
+    image_lookup_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
     language: Mapped[str] = mapped_column(
         String(10),
         nullable=False,

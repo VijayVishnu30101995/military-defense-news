@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 import json
@@ -15,6 +15,7 @@ from xml.etree import ElementTree
 from googlenewsdecoder import gnewsdecoder
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.core.content_filters import score_defense_relevance
 from app.models.article import Article
 from app.models.job_run import JobRun
@@ -28,6 +29,7 @@ from app.services.alerts import alert_source_failure
 from app.services.feed_text import body_text_from_html, clean_author, clean_summary, score_importance, split_paragraphs
 from app.services.safe_fetch import MAX_FEED_BYTES, MAX_PAGE_BYTES, open_public_url, read_limited
 from app.services.source_collection_job import SourceCollectionJobService
+from app.services.syndicated_photos import find_syndicated_photo
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +38,7 @@ logger = logging.getLogger(__name__)
 JUNK_IMAGE_PATTERN = re.compile(
     r"(?:1x1|\bpixel\b|spacer|blank\.|transparent\.|\bdot\.|beacon|track(?:ing)?[-_./]|"
     r"\blogo\b|wordmark|favicon|avatar|gravatar|profile[-_]pic|\bbadge\b|\bicon\b|"
-    r"placeholder|default[-_](?:image|thumb)|feedburner|doubleclick|googlesyndication)",
+    r"placeholder|substitute\.(?:png|jpe?g|gif|webp)|/watermark/|default[-_](?:image|thumb)|feedburner|doubleclick|googlesyndication)",
     re.IGNORECASE,
 )
 # Dimensions advertised in the URL itself, e.g. .../photo-320x180.jpg or ?w=120&h=90
@@ -61,6 +63,11 @@ IMAGE_BORROW_MIN_SIMILARITY = 0.5
 IMAGE_BORROW_MIN_SHARED_WORDS = 4
 IMAGE_BORROW_WINDOW = timedelta(hours=48)
 IMAGE_BORROW_LOOKBACK = timedelta(days=3)
+# Searching other outlets' copies costs ~10s a story (a search, a decode and a page fetch),
+# so each run looks up a bounded number of stories in parallel within a time budget.
+SYNDICATED_PHOTO_MAX_STORIES = 20
+SYNDICATED_PHOTO_WORKERS = 4
+SYNDICATED_PHOTO_BUDGET_SECONDS = 150
 HEADLINE_STOPWORDS = frozenset(
     "the and for with from into over after amid about against says said say its their his her "
     "this that than are was were has have had will would could new".split()
@@ -513,6 +520,53 @@ class SourceCollectorService:
             self.db.commit()
         return changed
 
+    def borrow_syndicated_photos(self, source: Source) -> int:
+        """Give this source's recent photo-less stories a photo from another outlet's copy.
+
+        For publishers that block page fetches (Reuters), this is the only way their stories
+        get a photo. Each story is searched once; stories the time budget doesn't reach are
+        left unmarked and tried on the next run. Returns how many stories received a photo.
+        """
+        now = datetime.now(timezone.utc)
+        targets = (
+            self.db.query(Article)
+            .filter(Article.source_id == source.id)
+            .filter(Article.image_url.is_(None))
+            .filter(Article.image_lookup_at.is_(None))
+            .filter(Article.published_at >= now - IMAGE_BORROW_LOOKBACK)
+            # Only stories that will be shown are worth the search.
+            .filter(Article.relevance_score >= settings.relevance_threshold)
+            .order_by(Article.published_at.desc())
+            .limit(SYNDICATED_PHOTO_MAX_STORIES)
+            .all()
+        )
+        if not targets:
+            return 0
+
+        publisher_host = urlparse(source.website_url or "").hostname
+        pool = ThreadPoolExecutor(max_workers=SYNDICATED_PHOTO_WORKERS, thread_name_prefix="syndicated-photo")
+        futures = {pool.submit(find_syndicated_photo, self, article.title, publisher_host): article for article in targets}
+        changed = 0
+        try:
+            for future in as_completed(futures, timeout=SYNDICATED_PHOTO_BUDGET_SECONDS):
+                article = futures[future]
+                article.image_lookup_at = now
+                try:
+                    found = future.result()
+                except Exception:
+                    logger.exception("Syndicated photo lookup crashed for article %s", article.id)
+                    continue
+                if found:
+                    article.image_url, article.image_credit = found
+                    changed += 1
+        except FuturesTimeoutError:
+            logger.info("Source %s: syndicated photo lookups hit the time budget; the rest wait for the next run", source.id)
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+
+        self.db.commit()
+        return changed
+
     @staticmethod
     def _count_feed_entries(root: ElementTree.Element) -> int:
         return sum(1 for item in root.iter() if item.tag.rsplit("}", 1)[-1] in ("item", "entry"))
@@ -590,6 +644,7 @@ class SourceCollectorService:
                 "image_url": image_url,
                 "body": body,
                 "author": author,
+                "publisher": publisher,
                 "publisher_url": publisher_url,
             })
         return items
@@ -774,6 +829,14 @@ class SourceCollectorService:
         except Exception:
             # Never let photo matching fail a collection run that already stored its stories.
             logger.exception("Borrowing images failed after collecting source %s", source_id)
+            self.db.rollback()
+
+        try:
+            syndicated = self.borrow_syndicated_photos(source)
+            if syndicated:
+                logger.info("Source %s (%s): %d stories took a photo from another outlet's copy", source_id, source.name, syndicated)
+        except Exception:
+            logger.exception("Syndicated photo lookup failed after collecting source %s", source_id)
             self.db.rollback()
 
         # The run still counts as a success (the feed was reachable and parsed), but an

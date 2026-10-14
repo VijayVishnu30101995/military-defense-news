@@ -14,7 +14,7 @@ from app.models.article_category import ArticleCategory
 from app.models.category import Category
 from app.models.source import Source
 from app.schemas.report import ReportRequest
-from app.services.newsletter_pdf import PdfArticle, PdfReport, PdfReportOptions, build_report_pdf
+from app.services.newsletter_pdf import PdfArticle, PdfReport, PdfReportOptions, build_report_pdf, key_point_lines
 
 router = APIRouter(prefix="/reports", tags=["Reports"], dependencies=[Depends(get_current_user)])
 
@@ -69,6 +69,8 @@ def build_report(payload: ReportRequest, db: Session = Depends(get_db)) -> Respo
                     position=position,
                     title=article.title,
                     summary=article.summary or article.description,
+                    key_points=key_point_lines(article.key_points),
+                    why_it_matters=article.why_it_matters,
                     categories=categories[article.id],
                     source_name=source_names.get(article.source_id),
                     published_at=article.published_at,
@@ -84,6 +86,7 @@ def build_report(payload: ReportRequest, db: Session = Depends(get_db)) -> Respo
                 include_sources=payload.include_sources,
                 include_images=payload.include_images,
                 include_links=payload.include_links,
+                include_key_points=payload.include_key_points,
             ),
             timezone_name=settings.news_timezone,
         )

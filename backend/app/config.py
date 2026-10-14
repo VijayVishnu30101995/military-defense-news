@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     # this are still collected and stored, so lowering it brings them back immediately.
     relevance_threshold: int = 30
 
+    # AI key points: set ANTHROPIC_API_KEY to turn them on. Without it the app works as before.
+    anthropic_api_key: str | None = None
+    key_points_model: str = "claude-haiku-5-5"
+
     smtp_host: str | None = None
     smtp_port: int = 587
     smtp_username: str | None = None

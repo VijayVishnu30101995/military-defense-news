@@ -158,6 +158,12 @@ class Article(Base):
         nullable=True,
     )
 
+    # One or two sentences on the story's significance, written with key_points by the AI pass.
+    why_it_matters: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
     ai_confidence: Mapped[int | None] = mapped_column(
         Integer,
         nullable=True,

@@ -67,6 +67,7 @@ class PdfArticle:
     summary: str | None = None
     body: list[str] = field(default_factory=list)
     key_points: list[str] = field(default_factory=list)
+    why_it_matters: str | None = None
     categories: list[str] = field(default_factory=list)
     source_name: str | None = None
     author: str | None = None
@@ -98,6 +99,11 @@ class PdfNewsletter:
 
 
 # ---------------------------------------------------------------- text helpers
+
+
+def key_point_lines(value: str | None) -> list[str]:
+    """Key points are stored one per line, each starting with "- "."""
+    return [line.lstrip("-*• ").strip() for line in (value or "").splitlines() if line.strip()]
 
 
 def _plain(value: str | None) -> str:
@@ -609,6 +615,8 @@ def _article_section(
     if article.key_points:
         box = [Paragraph("KEY POINTS", styles["box_title"])]
         box += [Paragraph(f"&bull;&nbsp; {_para(point)}", styles["point"]) for point in article.key_points[:4]]
+        if article.why_it_matters:
+            box.append(Paragraph(f"<b>Why it matters:</b> {_para(article.why_it_matters)}", styles["box_text"]))
         story += [Spacer(1, 4), _boxed(box)]
 
     if article.url:
@@ -732,6 +740,7 @@ class PdfReportOptions:
     include_sources: bool = True
     include_images: bool = True
     include_links: bool = True
+    include_key_points: bool = True
 
 
 @dataclass
@@ -867,6 +876,9 @@ def _report_styles() -> dict[str, ParagraphStyle]:
     styles["report_summary"] = ParagraphStyle(
         "report_summary", parent=styles["body"], fontSize=10, leading=14.2, spaceAfter=5,
     )
+    styles["report_why"] = ParagraphStyle(
+        "report_why", parent=styles["box_text"], spaceBefore=3, spaceAfter=4,
+    )
     styles["report_link"] = ParagraphStyle(
         "report_link", parent=styles["source"], fontSize=8, leading=11, spaceBefore=1,
     )
@@ -919,6 +931,10 @@ def _report_article(
         summary = summary[: REPORT_SUMMARY_CHARS - 3].rsplit(" ", 1)[0] + "..."
     if summary:
         text.append(Paragraph(escape(summary), styles["report_summary"]))
+    if options.include_key_points and article.key_points:
+        text += [Paragraph(f"&bull;&nbsp; {_para(point)}", styles["point"]) for point in article.key_points[:3]]
+        if article.why_it_matters:
+            text.append(Paragraph(f"<b>Why it matters:</b> {_para(article.why_it_matters)}", styles["report_why"]))
     if options.include_links and article.url:
         text.append(Paragraph(_report_link(article), styles["report_link"]))
 

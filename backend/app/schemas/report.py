@@ -19,6 +19,7 @@ class ReportRequest(BaseModel):
     include_sources: bool = True
     include_images: bool = True
     include_links: bool = True
+    include_key_points: bool = True
 
     @model_validator(mode="after")
     def _dates_in_order(self) -> "ReportRequest":

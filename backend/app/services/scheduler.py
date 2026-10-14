@@ -9,6 +9,7 @@ from app.models.source import Source
 from app.models.source_collection_job import SourceCollectionJob
 from app.services.collection_run import collection_lock
 from app.services.collector import SourceCollectorService
+from app.services.key_points import generate_key_points
 
 
 logger = logging.getLogger(__name__)
@@ -82,6 +83,23 @@ def _run_due_collection_jobs() -> None:
                 db.rollback()
 
 
+def run_key_points() -> None:
+    """Write AI key points for newly collected stories.
+
+    Skipped while a collection is running, so stories are read once their text is in;
+    the next tick catches up. Does nothing unless ANTHROPIC_API_KEY is set.
+    """
+    if not collection_lock.acquire(blocking=False):
+        return
+    try:
+        with SessionLocal() as db:
+            generate_key_points(db)
+    except Exception:
+        logger.exception("AI key points pass failed")
+    finally:
+        collection_lock.release()
+
+
 def start_collection_scheduler() -> None:
     if scheduler.running:
         return
@@ -92,6 +110,14 @@ def start_collection_scheduler() -> None:
         trigger="interval",
         minutes=5,
         id="source-collection-scheduler",
+        replace_existing=True,
+    )
+
+    scheduler.add_job(
+        run_key_points,
+        trigger="interval",
+        minutes=5,
+        id="ai-key-points",
         replace_existing=True,
     )
 

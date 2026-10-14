@@ -22,7 +22,7 @@ from app.models.newsletter_article import NewsletterArticle
 from app.models.region import Region
 from app.models.source import Source
 from app.services.feed_text import split_paragraphs
-from app.services.newsletter_pdf import PdfArticle, PdfNewsletter, PdfRelated, build_newsletter_pdf
+from app.services.newsletter_pdf import PdfArticle, PdfNewsletter, PdfRelated, build_newsletter_pdf, key_point_lines
 
 router = APIRouter(
     prefix="",
@@ -93,6 +93,7 @@ def _serialize_article(db: Session, article: Article, category_names: list[str] 
         "relevance_score": article.relevance_score,
         "reliability_score": article.reliability_score,
         "key_points": article.key_points,
+        "why_it_matters": article.why_it_matters,
         "categories": category_names,
         "processing_status": article.processing_status,
         "duplicate_status": article.duplicate_status,
@@ -558,18 +559,14 @@ def download_newsletter_pdf(newsletter_id: int, db: Session = Depends(get_db)) -
 
     pdf_articles = []
     for position, article in enumerate(article_rows, start=1):
-        key_points = [
-            line.lstrip("-* ").strip()
-            for line in (article.key_points or "").splitlines()
-            if line.strip()
-        ]
         pdf_articles.append(
             PdfArticle(
                 position=position,
                 title=article.title,
                 summary=article.summary or article.description,
                 body=split_paragraphs(article.content_excerpt),
-                key_points=key_points,
+                key_points=key_point_lines(article.key_points),
+                why_it_matters=article.why_it_matters,
                 categories=category_names(article.id),
                 source_name=source_names.get(article.source_id),
                 author=article.author,

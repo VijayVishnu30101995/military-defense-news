@@ -361,7 +361,7 @@ function renderLead(items) {
       <div class="lead-text">
         <span class="story-tag lead-tag">${escapeHtml(tag(item))}</span>
         <h3>${escapeHtml(item.title)}</h3>
-        ${className === 'lead-main' ? `<p>${escapeHtml(summarizeText(item.summary || item.description || ''))}</p>` : ''}
+        ${className === 'lead-main' ? `<p>${escapeHtml(summarizeText(cardSummary(item)))}</p>` : ''}
         <span class="lead-meta">${meta(item)}</span>
       </div>
     </article>
@@ -377,7 +377,7 @@ function renderNewsList(container, items) {
   }
 
   container.innerHTML = items.map((item) => {
-    const summary = item.summary || item.description || 'No summary available.';
+    const summary = cardSummary(item);
     const primaryCategory = Array.isArray(item.categories) && item.categories.length ? item.categories[0] : 'Defense';
     const publishedValue = item.published_at ? new Date(item.published_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : 'Today';
     return `
@@ -642,7 +642,7 @@ function renderArticleResults(result) {
 
   articleResults.innerHTML = pageItems.map((article) => {
     const categories = Array.isArray(article.categories) && article.categories.length ? article.categories : ['Defense'];
-    const summary = article.summary || article.description || 'No summary available.';
+    const summary = cardSummary(article);
     const published = article.published_at ? new Date(article.published_at).toLocaleDateString(undefined, {
       month: 'short',
       day: 'numeric',
@@ -689,13 +689,22 @@ function isPriority(article) {
     && (article.importance_score || 0) >= PRIORITY_IMPORTANCE;
 }
 
+// Stored one per line as "- point". Split on lines only: points contain full stops ("$1.2bn").
 function parseKeyPoints(value) {
   if (!value) return [];
   return String(value)
-    .split(/\n|\.|\;\s*/)
-    .map((part) => part.trim())
+    .split('\n')
+    .map((part) => part.replace(/^[-*•\s]+/, '').trim())
     .filter(Boolean)
     .slice(0, 6);
+}
+
+// Text for a card: the summary, or the first key point when the summary only repeats the headline.
+function cardSummary(article) {
+  const summary = article.summary || article.description || '';
+  const firstPoint = parseKeyPoints(article.key_points)[0];
+  if (firstPoint && (!summary || repeatsHeadline(summary, article.title))) return firstPoint;
+  return summary || 'No summary available.';
 }
 
 // Feed descriptions are often just the opening of the body cut off with "...", so when the
@@ -797,6 +806,13 @@ function openArticleDetail(articleId) {
           <p class="article-byline">${byline}</p>
           ${article.image_credit ? `<p class="photo-credit">Photo: ${escapeHtml(article.image_credit)}, from its report of the same story</p>` : ''}
           ${summary ? `<p class="article-standfirst">${escapeHtml(summary)}</p>` : ''}
+          ${keyPoints.length ? `
+            <section class="article-detail-section ai-brief" aria-labelledby="keyPointsHeading">
+              <h4 id="keyPointsHeading">Key points</h4>
+              <ul>${keyPoints.map((point) => `<li>${escapeHtml(point)}</li>`).join('')}</ul>
+              ${article.why_it_matters ? `<p class="why-it-matters"><strong>Why it matters:</strong> ${escapeHtml(article.why_it_matters)}</p>` : ''}
+              <p class="ai-note">Written by AI from the report below. Check the original for details.</p>
+            </section>` : ''}
           ${paragraphs.length
             ? `<div class="article-body-text">${paragraphs.map((p) => `<p>${escapeHtml(p)}</p>`).join('')}</div>`
             : `<div class="article-detail-section">
@@ -804,11 +820,6 @@ function openArticleDetail(articleId) {
                 <p>${escapeHtml(missingTextNote(article.original_url, sourceName))}</p>
               </div>`}
           ${article.text_credit && paragraphs.length ? `<p class="photo-credit">Text: ${escapeHtml(article.text_credit)}, from its report of the same story</p>` : ''}
-          ${keyPoints.length ? `
-            <div class="article-detail-section">
-              <h4>Key points</h4>
-              <ul>${keyPoints.map((point) => `<li>${escapeHtml(point)}</li>`).join('')}</ul>
-            </div>` : ''}
           <div class="article-detail-actions">
             <a href="${escapeHtml(article.original_url || '#')}" target="_blank" rel="noreferrer">
               <button type="button">Read on ${escapeHtml(sourceName)}</button>
@@ -1346,6 +1357,7 @@ const reportOptionInputs = {
   include_sources: document.getElementById('optSources'),
   include_images: document.getElementById('optImages'),
   include_links: document.getElementById('optLinks'),
+  include_key_points: document.getElementById('optKeyPoints'),
 };
 // The last PDF built, so Download right after Preview doesn't build it again.
 let lastReport = null;

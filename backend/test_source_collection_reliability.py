@@ -347,3 +347,11 @@ def test_borrow_missing_images_uses_only_strong_matches_from_other_sources() -> 
         db.delete(outlet)
         db.commit()
         db.close()
+
+
+def test_feed_summary_drops_joomla_placeholders() -> None:
+    from app.services.feed_text import clean_summary
+
+    assert clean_summary("{loadposition bannertop} {loadposition sidebarpub} On October 12, the Pentagon") == (
+        "On October 12, the Pentagon"
+    )

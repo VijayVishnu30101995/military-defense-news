@@ -20,12 +20,15 @@ _BOILERPLATE = [
     re.compile(r"^contact the authors?:", re.I),
 ]
 _TRAILING_POST_NOTICE = re.compile(r"\s*The post .+? appeared first on .+?\.?\s*$", re.I | re.S)
+# Joomla module placeholders that some sites (Army Recognition) leak into feed text.
+_CMS_PLACEHOLDER = re.compile(r"\{load(?:position|module)\s[^}]*\}", re.I)
 
 
 def clean_summary(value: str | None) -> str | None:
     if not value:
         return None
-    text = _TRAILING_POST_NOTICE.sub("", value).strip()
+    text = _TRAILING_POST_NOTICE.sub("", value)
+    text = re.sub(r"\s+", " ", _CMS_PLACEHOLDER.sub(" ", text)).strip()
     return text or None
 
 

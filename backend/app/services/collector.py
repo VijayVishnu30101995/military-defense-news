@@ -6,7 +6,9 @@ from email.utils import parsedate_to_datetime
 import json
 import logging
 import re
+from html import unescape
 from urllib import request
+from urllib.error import HTTPError
 from urllib.parse import urljoin, urlparse
 from xml.etree import ElementTree
 
@@ -160,6 +162,10 @@ class SourceCollectorService:
         self.db = db
         self.article_repository = ArticleRepository(db)
         self.job_service = SourceCollectionJobService(db)
+        # Publishers whose article pages refused us (401/403) during this collection.
+        # Their remaining stories skip the page fetch, and for Google News links the
+        # slow decode before it, since the answer won't change mid-run.
+        self._blocked_hosts: set[str] = set()
 
     @staticmethod
     def _safe_text(element) -> str | None:
@@ -299,6 +305,10 @@ class SourceCollectorService:
 
         if JUNK_IMAGE_PATTERN.search(cleaned):
             return None
+        # A bare site root is a broken feed image (Army Recognition's <img src> is the
+        # homepage), never a picture.
+        if urlparse(cleaned).path in ("", "/"):
+            return None
 
         match = _URL_DIMENSIONS.search(cleaned)
         if match:
@@ -343,16 +353,27 @@ class SourceCollectorService:
         if not include_inline:
             return None
 
-        for match in re.finditer(r'<img[^>]+src=["\']([^"\']+)["\']', html, flags=re.IGNORECASE | re.DOTALL):
+        for match in re.finditer(r"<img\b[^>]*>", html, flags=re.IGNORECASE | re.DOTALL):
+            tag = match.group(0)
+            src = re.search(r'\ssrc=["\']([^"\']+)["\']', tag, flags=re.IGNORECASE)
+            if not src:
+                continue
+            # Tracking pixels and flag/icon images declare their tiny size in the tag.
+            declared = [int(size) for size in re.findall(r'\s(?:width|height)=["\']?(\d+)(?![\d%])', tag, flags=re.IGNORECASE)]
+            if declared and min(declared) < IMAGE_MIN_EDGE:
+                continue
             # The bare <img> scan matches site furniture as readily as article art, so
             # every candidate goes through the junk screen.
-            usable = SourceCollectorService._usable_image_url(match.group(1), fallback_base_url)
+            usable = SourceCollectorService._usable_image_url(unescape(src.group(1)), fallback_base_url)
             if usable:
                 return usable
         return None
 
-    def _fetch_article_html(self, article_url: str | None) -> str | None:
+    def _fetch_article_html(self, article_url: str | None, publisher_url: str | None = None) -> str | None:
+        """Fetch a story's page. `publisher_url` is the outlet a Google News item names."""
         if not article_url:
+            return None
+        if any(urlparse(url).hostname in self._blocked_hosts for url in (article_url, publisher_url) if url):
             return None
 
         # Google News links are redirect pages whose og:image is Google's own logo, so
@@ -379,6 +400,14 @@ class SourceCollectorService:
                 # The lead image lives near the top of the page, so a cut-off page is still useful.
                 return response.read(MAX_PAGE_BYTES).decode("utf-8", errors="ignore")
         except Exception as exc:
+            if isinstance(exc, HTTPError) and exc.code in (401, 403):
+                blocked = {urlparse(article_url).hostname}
+                if publisher_url:
+                    blocked.add(urlparse(publisher_url).hostname)
+                self._blocked_hosts |= blocked - {None}
+                logger.warning("%s refused article page %s (HTTP %s); skipping its other pages this run",
+                               urlparse(article_url).hostname, article_url, exc.code)
+                return None
             # Non-fatal: the story is still stored, just without the page's own image.
             logger.warning("Could not fetch article page %s: %s", article_url, exc)
             return None
@@ -389,7 +418,7 @@ class SourceCollectorService:
         Feed thumbnails are often a section or category graphic shared across many
         stories, so they only win when the article page offers nothing usable.
         """
-        html = self._fetch_article_html(article_url)
+        html = self._fetch_article_html(article_url, item.get("publisher_url"))
         base = source.website_url
         return (
             self._extract_image_from_html(html, fallback_base_url=base or article_url, include_inline=False)
@@ -508,7 +537,9 @@ class SourceCollectorService:
                 title = self._safe_text(title_tag)
             # Aggregators (Google News) append " - Reuters" to every headline. Without the
             # suffix the headline matches the same wire story republished by another outlet.
-            publisher = self._safe_text(item.find("source"))
+            source_node = item.find("source")
+            publisher = self._safe_text(source_node)
+            publisher_url = source_node.attrib.get("url") if source_node is not None else None
             if title and publisher and title.endswith(f" - {publisher}"):
                 title = title[: -len(f" - {publisher}")].rstrip()
 
@@ -559,6 +590,7 @@ class SourceCollectorService:
                 "image_url": image_url,
                 "body": body,
                 "author": author,
+                "publisher_url": publisher_url,
             })
         return items
 

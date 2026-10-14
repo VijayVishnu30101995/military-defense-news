@@ -69,7 +69,7 @@ def test_malformed_json_ld_is_ignored() -> None:
 
 def test_best_article_image_prefers_article_page_over_feed_thumbnail(monkeypatch) -> None:
     service = SourceCollectorService(SessionLocal())
-    monkeypatch.setattr(service, "_fetch_article_html", lambda _url: ARTICLE_HTML)
+    monkeypatch.setattr(service, "_fetch_article_html", lambda _url, _publisher_url=None: ARTICLE_HTML)
 
     class Source:
         website_url = "https://example.com"
@@ -89,13 +89,13 @@ def test_best_article_image_falls_back_to_feed_then_inline(monkeypatch) -> None:
 
     feed_item = {"image_url": "https://cdn.example.com/feed/thumb.jpg"}
 
-    monkeypatch.setattr(service, "_fetch_article_html", lambda _url: "<html></html>")
+    monkeypatch.setattr(service, "_fetch_article_html", lambda _url, _publisher_url=None: "<html></html>")
     assert service._best_article_image("https://example.com/s", feed_item, Source()) == (
         "https://cdn.example.com/feed/thumb.jpg"
     )
 
     no_feed_image = '<html><body><img src="https://cdn.example.com/photos/only-inline.jpg"></body></html>'
-    monkeypatch.setattr(service, "_fetch_article_html", lambda _url: no_feed_image)
+    monkeypatch.setattr(service, "_fetch_article_html", lambda _url, _publisher_url=None: no_feed_image)
     assert service._best_article_image("https://example.com/s", {}, Source()) == (
         "https://cdn.example.com/photos/only-inline.jpg"
     )
@@ -194,3 +194,50 @@ def test_live_google_news_links_decode_to_publishers() -> None:
     )
 
     assert url is not None and urlparse(url).netloc != "news.google.com"
+
+
+def test_site_root_is_not_an_image() -> None:
+    # Army Recognition's feed sets every <img src> to its homepage.
+    assert SourceCollectorService._usable_image_url("https://www.armyrecognition.com/") is None
+    assert SourceCollectorService._usable_image_url("https://www.armyrecognition.com") is None
+
+
+def test_inline_scan_skips_images_that_declare_a_tiny_size() -> None:
+    html = """
+    <img src="//tracker.example/code?mode=img&amp;code=1" alt="visitor activity tracker" width="1" height="1" />
+    <img src="/images/flags/China.png" width="32" height="32"/>
+    <img class="el-image" src="/images/stories/news/destroyer.jpg" alt="Destroyer">
+    """
+    url = SourceCollectorService._extract_image_from_html(html, "https://www.armyrecognition.com/")
+
+    assert url == "https://www.armyrecognition.com/images/stories/news/destroyer.jpg"
+
+
+def test_inline_scan_keeps_percentage_widths() -> None:
+    html = '<img src="/lead.jpg" width="100%">'
+
+    assert SourceCollectorService._extract_image_from_html(html, "https://x.example/") == "https://x.example/lead.jpg"
+
+
+def test_publisher_that_refuses_pages_is_skipped_for_the_rest_of_the_run(monkeypatch) -> None:
+    from urllib.error import HTTPError
+
+    import app.services.collector as collector_module
+
+    decodes = []
+
+    def fake_decoder(url, interval=None, proxy=None):
+        decodes.append(url)
+        return {"status": True, "decoded_url": f"https://www.reuters.com/world/story-{len(decodes)}/"}
+
+    def refuse(req, timeout=None):
+        raise HTTPError(req.full_url, 401, "Unauthorized", {}, None)
+
+    monkeypatch.setattr(collector_module, "gnewsdecoder", fake_decoder)
+    monkeypatch.setattr(collector_module, "open_public_url", refuse)
+    service = SourceCollectorService(SessionLocal())
+
+    for _ in range(3):
+        assert service._fetch_article_html(GOOGLE_NEWS_LINK, "https://www.reuters.com") is None
+
+    assert len(decodes) == 1

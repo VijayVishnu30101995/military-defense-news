@@ -18,5 +18,7 @@ services:
         value: production
       - key: NEWS_TIMEZONE
         value: Asia/Kolkata
+      - key: FRONTEND_URL
+        value: https://military-defense-news.pages.dev
       - key: PYTHON_VERSION
         value: 3.13.0

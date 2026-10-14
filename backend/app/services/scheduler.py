@@ -4,11 +4,13 @@ from datetime import datetime, timezone
 from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy import func
 
+from app.config import settings
 from app.database import SessionLocal
 from app.models.source import Source
 from app.models.source_collection_job import SourceCollectionJob
 from app.services.collection_run import collection_lock
 from app.services.collector import SourceCollectorService
+from app.services.watchlists import DAILY_DIGEST_HOUR, run_daily_digest, run_watchlist_pass
 
 
 logger = logging.getLogger(__name__)
@@ -82,6 +84,33 @@ def _run_due_collection_jobs() -> None:
                 db.rollback()
 
 
+def run_watchlist_alerts() -> None:
+    """Match newly collected stories to watchlists and send instant alerts.
+
+    Skipped while a collection is running, so stories are matched once their text is in;
+    the next tick catches up.
+    """
+    if not collection_lock.acquire(blocking=False):
+        return
+    try:
+        with SessionLocal() as db:
+            run_watchlist_pass(db)
+    except Exception:
+        logger.exception("Watchlist alert pass failed")
+    finally:
+        collection_lock.release()
+
+
+def run_watchlist_daily_digest() -> None:
+    # Waits for a running collection rather than skipping: a digest missed is a day late.
+    with collection_lock:
+        try:
+            with SessionLocal() as db:
+                run_daily_digest(db)
+        except Exception:
+            logger.exception("Watchlist daily digest failed")
+
+
 def start_collection_scheduler() -> None:
     if scheduler.running:
         return
@@ -95,9 +124,24 @@ def start_collection_scheduler() -> None:
         replace_existing=True,
     )
 
+    scheduler.add_job(
+        run_watchlist_alerts,
+        trigger="interval",
+        minutes=5,
+        id="watchlist-alerts",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        run_watchlist_daily_digest,
+        trigger="cron",
+        hour=DAILY_DIGEST_HOUR,
+        timezone=settings.news_timezone,
+        id="watchlist-daily-digest",
+        replace_existing=True,
+    )
+
     # Health alert job: runs at configurable interval and sends aggregated alerts when threshold exceeded
     try:
-        from app.config import settings
         from app.services.alerts import notify_health_summary
         from datetime import datetime, timezone
 

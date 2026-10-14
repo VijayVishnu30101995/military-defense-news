@@ -10,6 +10,7 @@ from app.api.v1.health import router as health_router
 from app.api.v1.reports import router as reports_router
 from app.api.v1.sources import router as sources_router
 from app.api.v1.users import router as users_router
+from app.api.v1.watchlists import router as watchlists_router
 from app.api.dependencies import get_current_user
 from app.core.reference_data import ensure_reference_data
 from app.database import SessionLocal, engine
@@ -74,6 +75,11 @@ app.include_router(
 
 app.include_router(
     reports_router,
+    prefix="/api/v1",
+)
+
+app.include_router(
+    watchlists_router,
     prefix="/api/v1",
 )
 

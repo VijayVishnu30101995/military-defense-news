@@ -34,6 +34,7 @@
         <div class="header-actions">
           <div id="viewSwitcher" class="view-switcher hidden" aria-label="Main views">
             <button type="button" class="nav-tab active" data-view="dashboard">Dashboard</button>
+            <button type="button" class="nav-tab" data-view="watchlists">Watchlists<span id="watchlistBadge" class="nav-badge hidden"></span></button>
             <button type="button" class="nav-tab admin-only" data-view="sources">Sources</button>
           </div>
           <div class="live-pill"><span class="live-dot" aria-hidden="true"></span>Live monitor</div>
@@ -278,6 +279,60 @@
                 </div>
               </div>
             </section>
+          </div>
+
+          <div id="watchlistView" class="view-panel hidden">
+            <section class="card watchlist-hero">
+              <div>
+                <p class="eyebrow">Watchlists</p>
+                <h2>Track what matters to you</h2>
+                <p class="muted">Save the programmes, companies, countries or weapon systems you follow. New stories that mention them are flagged here, and can be emailed to you.</p>
+              </div>
+              <button id="newWatchlistBtn" type="button">New watchlist</button>
+            </section>
+
+            <div class="watchlist-layout">
+              <aside class="card watchlist-sidebar" aria-label="Your watchlists">
+                <div id="watchlistList" class="watchlist-list"></div>
+              </aside>
+
+              <section class="card watchlist-main">
+                <form id="watchlistForm" class="watchlist-form hidden" novalidate>
+                  <header class="watchlist-form-head">
+                    <p class="eyebrow" id="watchlistFormKicker">New watchlist</p>
+                    <h3 id="watchlistFormTitle">What do you want to follow?</h3>
+                  </header>
+                  <label>Name
+                    <input id="watchlistName" type="text" maxlength="100" required placeholder="e.g. US rocket artillery" />
+                  </label>
+                  <label>Watch for
+                    <input id="watchlistTerms" type="text" required placeholder="e.g. HIMARS, GMLRS, Lockheed Martin" aria-describedby="watchlistTermsHint" />
+                  </label>
+                  <p id="watchlistTermsHint" class="field-hint">Separate words or phrases with commas. A story matches if it mentions any of them. Plurals and model variants count: "F-35" also finds "F-35A".</p>
+                  <label><span>Leave out stories mentioning <span class="optional">(optional)</span></span>
+                    <input id="watchlistExclude" type="text" placeholder="e.g. stock price, earnings" />
+                  </label>
+                  <label>Email me
+                    <select id="watchlistEmail">
+                      <option value="off">Never — show alerts in the app only</option>
+                      <option value="instant">As soon as new stories arrive</option>
+                      <option value="daily">Once a day, at 8:00 (IST)</option>
+                    </select>
+                  </label>
+                  <p id="watchlistEmailNote" class="field-hint hidden">Email is not set up on this server yet, so alerts will only show here until it is.</p>
+                  <div id="watchlistPreview" class="watchlist-preview" aria-live="polite"></div>
+                  <p id="watchlistFormError" class="login-error hidden" role="alert"></p>
+                  <div class="watchlist-form-actions">
+                    <button id="deleteWatchlistBtn" type="button" class="secondary danger-btn hidden">Delete</button>
+                    <span class="spacer"></span>
+                    <button id="cancelWatchlistBtn" type="button" class="secondary">Cancel</button>
+                    <button id="saveWatchlistBtn" type="submit">Save watchlist</button>
+                  </div>
+                </form>
+
+                <div id="watchlistMatches" class="watchlist-matches"></div>
+              </section>
+            </div>
           </div>
         </section>
       </main>

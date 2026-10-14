@@ -196,6 +196,10 @@ async function api(path, options = {}) {
     try {
       const { detail } = JSON.parse(errorText);
       if (typeof detail === 'string') message = detail;
+      // Validation errors arrive as a list; show their messages rather than raw JSON.
+      if (Array.isArray(detail)) {
+        message = detail.map((item) => String(item.msg || '').replace(/^Value error, /, '')).filter(Boolean).join(' ') || message;
+      }
     } catch {
       // Not JSON; show the raw text.
     }
@@ -698,8 +702,6 @@ function parseKeyPoints(value) {
     .slice(0, 6);
 }
 
-// Feed descriptions are often just the opening of the body cut off with "...", so when the
-// full text is present its first paragraph becomes the standfirst instead of the truncated teaser.
 // A summary that is only the headline again, often with the outlet's name appended
 // ("Eleven sailors missing ... Reuters"), says nothing new.
 function repeatsHeadline(summary, title) {
@@ -708,6 +710,8 @@ function repeatsHeadline(summary, title) {
   return Boolean(head) && words(summary).startsWith(head) && words(summary).length - head.length <= 30;
 }
 
+// Feed descriptions are often just the opening of the body cut off with "...", so when the
+// full text is present its first paragraph becomes the standfirst instead of the truncated teaser.
 function articleText(article) {
   const paragraphs = String(article.content_excerpt || '')
     .split(/\n{2,}/)
@@ -1084,7 +1088,9 @@ async function startSession() {
   authCard.classList.add('hidden');
   dashboardEl.classList.remove('hidden');
   logoutBtn.classList.remove('hidden');
-  showView('dashboard');
+  // Watchlist alert emails link to #watchlists.
+  showView(window.location.hash === '#watchlists' ? 'watchlists' : 'dashboard');
+  startWatchlistRefresh();
   await Promise.all([loadDashboard(), loadReferenceData(), loadArticles()]);
 
   if (isAdmin()) {
@@ -1695,16 +1701,19 @@ async function deleteSource(sourceId) {
 }
 
 function showView(viewName) {
-  const isDashboard = viewName === 'dashboard' || !isAdmin();
+  const known = ['dashboard', 'watchlists', 'sources'];
+  const view = !known.includes(viewName) || (viewName === 'sources' && !isAdmin()) ? 'dashboard' : viewName;
   viewSwitcher.classList.toggle('hidden', !getToken());
-  dashboardView.classList.toggle('hidden', !isDashboard);
-  sourceView.classList.toggle('hidden', isDashboard);
+  dashboardView.classList.toggle('hidden', view !== 'dashboard');
+  sourceView.classList.toggle('hidden', view !== 'sources');
+  watchlistView.classList.toggle('hidden', view !== 'watchlists');
 
   navTabs.forEach((tab) => {
-    const active = tab.dataset.view === (isDashboard ? 'dashboard' : viewName);
+    const active = tab.dataset.view === view;
     tab.classList.toggle('active', active);
     tab.setAttribute('aria-pressed', String(active));
   });
+  if (view === 'watchlists' && getToken()) loadWatchlists();
 }
 
 function logout() {
@@ -1712,6 +1721,7 @@ function logout() {
   setCurrentUser(null);
   stopHealthRefresh();
   stopCollectionPolling();
+  stopWatchlistRefresh();
   authCard.classList.remove('hidden');
   dashboardEl.classList.add('hidden');
   logoutBtn.classList.add('hidden');
@@ -2082,6 +2092,346 @@ articleResults.addEventListener('change', (event) => {
 themeToggleBtn.addEventListener('click', () => {
   const nextTheme = document.body.dataset.theme === 'light' ? 'dark' : 'light';
   setTheme(nextTheme);
+});
+
+// ---------- Watchlists ----------
+
+const watchlistView = document.getElementById('watchlistView');
+const watchlistBadge = document.getElementById('watchlistBadge');
+const watchlistList = document.getElementById('watchlistList');
+const watchlistMatches = document.getElementById('watchlistMatches');
+const watchlistForm = document.getElementById('watchlistForm');
+const watchlistName = document.getElementById('watchlistName');
+const watchlistTerms = document.getElementById('watchlistTerms');
+const watchlistExclude = document.getElementById('watchlistExclude');
+const watchlistEmail = document.getElementById('watchlistEmail');
+const watchlistPreview = document.getElementById('watchlistPreview');
+const watchlistFormError = document.getElementById('watchlistFormError');
+const deleteWatchlistBtn = document.getElementById('deleteWatchlistBtn');
+const saveWatchlistBtn = document.getElementById('saveWatchlistBtn');
+
+const WATCHLIST_REFRESH_MS = 60000;
+const WATCHLIST_PAGE_SIZE = 20;
+const EMAIL_LABELS = { off: 'In-app alerts only', instant: 'Instant email', daily: 'Daily email digest' };
+const watchlistState = { items: [], selectedId: null, editingId: null, emailAvailable: false, backfillDays: 7 };
+let watchlistTimer = null;
+let watchlistPreviewTimer = null;
+let watchlistPreviewSeq = 0;
+
+function splitTerms(value) {
+  return String(value || '').split(/[,;\n]/).map((term) => term.trim()).filter(Boolean);
+}
+
+function storyCount(count) {
+  return `${count} ${count === 1 ? 'story' : 'stories'}`;
+}
+
+function setWatchlistBadge(count) {
+  watchlistBadge.textContent = !count ? '' : count > 99 ? '99+' : String(count);
+  watchlistBadge.title = `${storyCount(count)} not yet read`;
+  watchlistBadge.classList.toggle('hidden', !count);
+}
+
+async function refreshWatchlists() {
+  const data = await api('/watchlists');
+  watchlistState.items = Array.isArray(data.items) ? data.items : [];
+  watchlistState.emailAvailable = Boolean(data.email_available);
+  watchlistState.backfillDays = data.backfill_days || 7;
+  setWatchlistBadge(data.unread_total || 0);
+  return data;
+}
+
+function startWatchlistRefresh() {
+  stopWatchlistRefresh();
+  refreshWatchlists().catch(() => {});
+  watchlistTimer = setInterval(async () => {
+    try {
+      await refreshWatchlists();
+      if (!watchlistView.classList.contains('hidden')) renderWatchlistList();
+    } catch {
+      // The next tick tries again.
+    }
+  }, WATCHLIST_REFRESH_MS);
+}
+
+function stopWatchlistRefresh() {
+  if (watchlistTimer) {
+    clearInterval(watchlistTimer);
+    watchlistTimer = null;
+  }
+  setWatchlistBadge(0);
+}
+
+async function loadWatchlists() {
+  try {
+    await refreshWatchlists();
+  } catch (error) {
+    watchlistList.innerHTML = `<p class="empty-state">Could not load your watchlists: ${escapeHtml(error.message)}</p>`;
+    return;
+  }
+  renderWatchlistList();
+  if (!watchlistForm.classList.contains('hidden')) return;
+  if (!watchlistState.items.length) {
+    openWatchlistForm(null);
+    return;
+  }
+  const selected = watchlistState.items.find((item) => item.id === watchlistState.selectedId) || watchlistState.items[0];
+  selectWatchlist(selected.id);
+}
+
+function renderWatchlistList() {
+  const { items, selectedId } = watchlistState;
+  if (!items.length) {
+    watchlistList.innerHTML = '<p class="empty-state">No watchlists yet. Create one to start tracking a topic.</p>';
+    return;
+  }
+  watchlistList.innerHTML = items.map((item) => `
+    <button type="button" class="watchlist-item${item.id === selectedId ? ' active' : ''}${item.is_active ? '' : ' paused'}"
+      data-watchlist="${item.id}" aria-pressed="${item.id === selectedId}">
+      <span class="watchlist-item-head">
+        <strong>${escapeHtml(item.name)}</strong>
+        ${item.unread_count ? `<span class="nav-badge" title="${storyCount(item.unread_count)} not yet read">${item.unread_count}</span>` : ''}
+      </span>
+      <span class="watchlist-item-terms">${escapeHtml(item.terms.join(', '))}</span>
+      <span class="watchlist-item-meta">${item.is_active ? EMAIL_LABELS[item.email_frequency] : 'Paused'} · ${storyCount(item.match_count)}</span>
+    </button>
+  `).join('');
+}
+
+function watchlistHeader(item) {
+  const terms = item.terms.map((term) => `<span class="story-tag">${escapeHtml(term)}</span>`).join('');
+  const excluded = item.exclude_terms.map((term) => `<span class="story-tag exclude-tag">not ${escapeHtml(term)}</span>`).join('');
+  return `
+    <header class="watchlist-head">
+      <div>
+        <p class="eyebrow">${item.is_active ? escapeHtml(EMAIL_LABELS[item.email_frequency]) : 'Paused: no new matches or emails'}</p>
+        <h3>${escapeHtml(item.name)}</h3>
+        <div class="chip-row">${terms}${excluded}</div>
+      </div>
+      <div class="watchlist-head-actions">
+        <button type="button" class="secondary small-btn" data-watchlist-toggle>${item.is_active ? 'Pause' : 'Resume'}</button>
+        <button type="button" class="secondary small-btn" data-watchlist-edit>Edit</button>
+      </div>
+    </header>
+  `;
+}
+
+function watchlistStory(article) {
+  const source = getSourceName(article.source_id);
+  const when = article.published_at
+    ? new Date(article.published_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    : 'Recent';
+  return `
+    <article class="news-item watchlist-story${article.is_new ? ' is-new' : ''}" data-open-article="${article.id}"
+      tabindex="0" role="button" aria-label="Open brief: ${escapeHtml(article.title)}">
+      <div class="news-thumb">${imageHtml(article.image_url, article.categories)}</div>
+      <div class="news-body">
+        <div class="story-meta">
+          ${article.is_new ? '<span class="story-tag new-tag">New</span>' : ''}
+          ${source ? `<span>${escapeHtml(source)}</span>` : ''}
+          <span>${escapeHtml(when)}</span>
+        </div>
+        <h3>${escapeHtml(article.title)}</h3>
+        <p>${escapeHtml(summarizeText(article.summary || article.description))}</p>
+        <p class="matched-terms">Mentions ${article.matched_terms.map((term) => `<strong>${escapeHtml(term)}</strong>`).join(', ')}</p>
+      </div>
+    </article>
+  `;
+}
+
+async function selectWatchlist(id, page = 1) {
+  watchlistState.selectedId = id;
+  closeWatchlistForm();
+  renderWatchlistList();
+  const item = watchlistState.items.find((entry) => entry.id === id);
+  if (!item) return;
+  watchlistMatches.innerHTML = `${watchlistHeader(item)}<p class="muted">Loading stories…</p>`;
+
+  let data;
+  try {
+    data = await api(`/watchlists/${id}/matches?page=${page}&page_size=${WATCHLIST_PAGE_SIZE}`);
+  } catch (error) {
+    watchlistMatches.innerHTML = `${watchlistHeader(item)}<p class="empty-state">Could not load stories: ${escapeHtml(error.message)}</p>`;
+    return;
+  }
+  // The reader picked another watchlist while this one was loading.
+  if (watchlistState.selectedId !== id) return;
+
+  const pages = Math.ceil(data.total / WATCHLIST_PAGE_SIZE);
+  const pager = pages > 1 ? `
+    <div class="pagination">
+      <button type="button" class="pg-btn" data-watchlist-page="${page - 1}" ${page === 1 ? 'disabled' : ''}>&#8592; Newer</button>
+      <span class="muted">Page ${page} of ${pages}</span>
+      <button type="button" class="pg-btn" data-watchlist-page="${page + 1}" ${page === pages ? 'disabled' : ''}>Older &#8594;</button>
+    </div>` : '';
+  watchlistMatches.innerHTML = `
+    ${watchlistHeader(item)}
+    <p class="watchlist-count">${storyCount(data.total)}</p>
+    ${data.items.length
+      ? `<div class="list-group watchlist-stories">${data.items.map(watchlistStory).join('')}</div>${pager}`
+      : `<p class="empty-state">No stories have mentioned these terms in the last ${watchlistState.backfillDays} days. New ones will appear here as they are collected.</p>`}
+  `;
+
+  // Opening the watchlist reads its new stories; they keep their "New" tag until the next visit.
+  if (item.unread_count) {
+    api(`/watchlists/${id}/seen`, { method: 'POST' })
+      .then(refreshWatchlists)
+      .then(renderWatchlistList)
+      .catch(() => {});
+  }
+}
+
+function openWatchlistForm(item) {
+  watchlistState.editingId = item ? item.id : null;
+  document.getElementById('watchlistFormKicker').textContent = item ? 'Edit watchlist' : 'New watchlist';
+  document.getElementById('watchlistFormTitle').textContent = item ? item.name : 'What do you want to follow?';
+  watchlistName.value = item ? item.name : '';
+  watchlistTerms.value = item ? item.terms.join(', ') : '';
+  watchlistExclude.value = item ? item.exclude_terms.join(', ') : '';
+  watchlistEmail.value = item ? item.email_frequency : 'off';
+  deleteWatchlistBtn.classList.toggle('hidden', !item);
+  document.getElementById('watchlistEmailNote').classList.toggle('hidden', watchlistState.emailAvailable);
+  watchlistFormError.classList.add('hidden');
+  watchlistForm.classList.remove('hidden');
+  watchlistMatches.classList.add('hidden');
+  updateWatchlistPreview();
+  watchlistName.focus();
+}
+
+function closeWatchlistForm() {
+  watchlistForm.classList.add('hidden');
+  watchlistMatches.classList.remove('hidden');
+  watchlistState.editingId = null;
+  clearTimeout(watchlistPreviewTimer);
+  watchlistPreviewSeq += 1;
+}
+
+function showWatchlistError(message) {
+  watchlistFormError.textContent = message;
+  watchlistFormError.classList.remove('hidden');
+}
+
+function updateWatchlistPreview() {
+  clearTimeout(watchlistPreviewTimer);
+  const terms = splitTerms(watchlistTerms.value);
+  if (!terms.length) {
+    watchlistPreview.innerHTML = '';
+    return;
+  }
+  watchlistPreview.innerHTML = '<p class="muted">Checking recent stories…</p>';
+  const seq = ++watchlistPreviewSeq;
+  watchlistPreviewTimer = setTimeout(async () => {
+    try {
+      const data = await api('/watchlists/preview', {
+        method: 'POST',
+        body: JSON.stringify({ terms, exclude_terms: splitTerms(watchlistExclude.value) }),
+      });
+      if (seq !== watchlistPreviewSeq) return;
+      watchlistPreview.innerHTML = `
+        <p><strong>${storyCount(data.total)}</strong> from the last ${data.days} days ${data.total === 1 ? 'matches' : 'match'}.</p>
+        ${data.items.length ? `<ul>${data.items.map((story) => `<li>${escapeHtml(story.title)}</li>`).join('')}</ul>` : ''}
+      `;
+    } catch (error) {
+      if (seq === watchlistPreviewSeq) watchlistPreview.innerHTML = `<p class="muted">${escapeHtml(error.message)}</p>`;
+    }
+  }, 400);
+}
+
+watchlistTerms.addEventListener('input', updateWatchlistPreview);
+watchlistExclude.addEventListener('input', updateWatchlistPreview);
+watchlistForm.addEventListener('input', () => watchlistFormError.classList.add('hidden'));
+
+watchlistForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const body = {
+    name: watchlistName.value.trim(),
+    terms: splitTerms(watchlistTerms.value),
+    exclude_terms: splitTerms(watchlistExclude.value),
+    email_frequency: watchlistEmail.value,
+  };
+  if (!body.name) return showWatchlistError('Give the watchlist a name.');
+  if (!body.terms.length) return showWatchlistError('Add at least one word or phrase to watch for.');
+
+  const editingId = watchlistState.editingId;
+  saveWatchlistBtn.disabled = true;
+  try {
+    const saved = await api(editingId ? `/watchlists/${editingId}` : '/watchlists', {
+      method: editingId ? 'PATCH' : 'POST',
+      body: JSON.stringify(body),
+    });
+    await refreshWatchlists();
+    selectWatchlist(saved.id);
+  } catch (error) {
+    showWatchlistError(error.message);
+  } finally {
+    saveWatchlistBtn.disabled = false;
+  }
+});
+
+document.getElementById('cancelWatchlistBtn').addEventListener('click', () => {
+  closeWatchlistForm();
+  const fallback = watchlistState.items.find((item) => item.id === watchlistState.selectedId) || watchlistState.items[0];
+  if (fallback) selectWatchlist(fallback.id);
+  else watchlistMatches.innerHTML = '<p class="empty-state">Create a watchlist to start tracking a topic.</p>';
+});
+
+deleteWatchlistBtn.addEventListener('click', async () => {
+  const id = watchlistState.editingId;
+  const item = watchlistState.items.find((entry) => entry.id === id);
+  if (!item || !confirm(`Delete the watchlist "${item.name}"? Its alerts will stop.`)) return;
+  try {
+    await api(`/watchlists/${id}`, { method: 'DELETE' });
+    watchlistState.selectedId = null;
+    closeWatchlistForm();
+    await loadWatchlists();
+  } catch (error) {
+    showWatchlistError(error.message);
+  }
+});
+
+document.getElementById('newWatchlistBtn').addEventListener('click', () => openWatchlistForm(null));
+
+watchlistList.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-watchlist]');
+  if (button) selectWatchlist(Number(button.dataset.watchlist));
+});
+
+watchlistMatches.addEventListener('click', async (event) => {
+  const item = watchlistState.items.find((entry) => entry.id === watchlistState.selectedId);
+  if (event.target.closest('[data-watchlist-edit]') && item) {
+    openWatchlistForm(item);
+    return;
+  }
+  const toggle = event.target.closest('[data-watchlist-toggle]');
+  if (toggle && item) {
+    toggle.disabled = true;
+    try {
+      await api(`/watchlists/${item.id}`, { method: 'PATCH', body: JSON.stringify({ is_active: !item.is_active }) });
+      await refreshWatchlists();
+      selectWatchlist(item.id);
+    } catch (error) {
+      toggle.disabled = false;
+      alert(`Unable to update the watchlist: ${error.message}`);
+    }
+    return;
+  }
+  const pageButton = event.target.closest('[data-watchlist-page]');
+  if (pageButton && !pageButton.disabled && item) {
+    await selectWatchlist(item.id, Number(pageButton.dataset.watchlistPage));
+    watchlistMatches.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    return;
+  }
+  const story = event.target.closest('[data-open-article]');
+  if (story) openArticleDetail(Number(story.dataset.openArticle));
+});
+
+watchlistMatches.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter' && event.key !== ' ') return;
+  const story = event.target.closest('[data-open-article]');
+  if (story) {
+    event.preventDefault();
+    openArticleDetail(Number(story.dataset.openArticle));
+  }
 });
 
 setTheme(getTheme());

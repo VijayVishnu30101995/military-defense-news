@@ -11,6 +11,7 @@ from app.models.source import Source
 from app.models.source_collection_job import SourceCollectionJob
 from app.models.system_setting import SystemSetting
 from app.models.user import User
+from app.models.watchlist import Watchlist, WatchlistMatch
 
 __all__ = [
     "Article",
@@ -26,4 +27,6 @@ __all__ = [
     "SourceCollectionJob",
     "SystemSetting",
     "User",
+    "Watchlist",
+    "WatchlistMatch",
 ]

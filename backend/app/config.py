@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     # this are still collected and stored, so lowering it brings them back immediately.
     relevance_threshold: int = 30
 
+    # The address readers open the app at; watchlist emails link back to it when set.
+    frontend_url: str | None = None
+
     smtp_host: str | None = None
     smtp_port: int = 587
     smtp_username: str | None = None

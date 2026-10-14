@@ -83,6 +83,36 @@ class SourceAlertService:
             return False
 
 
+def email_configured() -> bool:
+    host, *_ = SourceAlertService._smtp_config()
+    return bool(host)
+
+
+def send_email(recipients: list[str], subject: str, text: str, html: str | None = None) -> bool:
+    """Send one email through the configured SMTP server. Returns False if it was not sent."""
+    host, port, username, password, use_tls, sender = SourceAlertService._smtp_config()
+    if not host or not recipients:
+        return False
+    try:
+        msg = EmailMessage()
+        msg["Subject"] = subject
+        msg["From"] = sender or username or "noreply@localhost"
+        msg["To"] = ", ".join(recipients)
+        msg.set_content(text)
+        if html:
+            msg.add_alternative(html, subtype="html")
+        with smtplib.SMTP(host, port, timeout=SMTP_TIMEOUT_SECONDS) as server:
+            if use_tls:
+                server.starttls()
+            if username and password:
+                server.login(username, password)
+            server.send_message(msg)
+        return True
+    except Exception:
+        logger.exception("Failed to send email %r to %s", subject, recipients)
+        return False
+
+
 def alert_source_failure(
     source_name: str,
     error: str,

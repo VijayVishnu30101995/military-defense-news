@@ -113,7 +113,7 @@ class _FakeFeedResponse:
     def __exit__(self, *exc) -> bool:
         return False
 
-    def read(self) -> bytes:
+    def read(self, size: int = -1) -> bytes:
         return self._payload
 
 
@@ -134,8 +134,8 @@ def _collect_with_feed(monkeypatch, feed_xml: str):
     db.refresh(source)
 
     monkeypatch.setattr(
-        collector_module.request,
-        "urlopen",
+        collector_module,
+        "open_public_url",
         lambda *args, **kwargs: _FakeFeedResponse(feed_xml.encode("utf-8")),
     )
 

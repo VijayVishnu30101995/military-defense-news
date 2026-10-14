@@ -24,6 +24,7 @@ from app.schemas.collection import CollectionRunResponse
 from app.schemas.source_collection_job import SourceCollectionJobCreate
 from app.services.alerts import alert_source_failure
 from app.services.feed_text import body_text_from_html, clean_author, clean_summary, score_importance, split_paragraphs
+from app.services.safe_fetch import MAX_FEED_BYTES, MAX_PAGE_BYTES, open_public_url, read_limited
 from app.services.source_collection_job import SourceCollectionJobService
 
 logger = logging.getLogger(__name__)
@@ -370,12 +371,13 @@ class SourceCollectorService:
                 },
                 method="GET",
             )
-            with request.urlopen(req, timeout=15) as response:
+            with open_public_url(req, timeout=15) as response:
                 content_type = response.headers.get_content_type()
                 if content_type != "text/html" and "xml" not in content_type:
                     logger.info("Article page %s returned %s; no page image checked", article_url, content_type)
                     return None
-                return response.read().decode("utf-8", errors="ignore")
+                # The lead image lives near the top of the page, so a cut-off page is still useful.
+                return response.read(MAX_PAGE_BYTES).decode("utf-8", errors="ignore")
         except Exception as exc:
             # Non-fatal: the story is still stored, just without the page's own image.
             logger.warning("Could not fetch article page %s: %s", article_url, exc)
@@ -642,8 +644,8 @@ class SourceCollectorService:
         )
 
         try:
-            with request.urlopen(req, timeout=20) as response:
-                payload = response.read()
+            with open_public_url(req, timeout=20) as response:
+                payload = read_limited(response, MAX_FEED_BYTES)
         except Exception as exc:  # pragma: no cover - network failure path
             error = f"Failed to fetch source feed: {exc}"
             self._upsert_job_run(source_id, "FAILED", error=error)

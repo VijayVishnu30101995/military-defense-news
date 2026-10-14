@@ -128,7 +128,7 @@ def test_google_news_link_is_decoded_to_publisher_article(monkeypatch) -> None:
             def get_content_type():
                 return "text/html"
 
-        def read(self):
+        def read(self, size=-1):
             return ARTICLE_HTML.encode()
 
         def __enter__(self):
@@ -141,7 +141,7 @@ def test_google_news_link_is_decoded_to_publisher_article(monkeypatch) -> None:
         fetched["url"] = req.full_url
         return FakeResponse()
 
-    monkeypatch.setattr(collector_module.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(collector_module, "open_public_url", fake_urlopen)
 
     html = SourceCollectorService(SessionLocal())._fetch_article_html(GOOGLE_NEWS_LINK)
 
@@ -157,7 +157,7 @@ def test_failed_google_news_decode_returns_none_without_fetching(monkeypatch) ->
         collector_module, "gnewsdecoder", lambda url, interval=None, proxy=None: {"status": False, "message": "nope"}
     )
     monkeypatch.setattr(
-        collector_module.request, "urlopen",
+        collector_module, "open_public_url",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not fetch Google's page")),
     )
 

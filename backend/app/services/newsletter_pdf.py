@@ -7,7 +7,7 @@ from datetime import date, datetime, timezone
 from io import BytesIO
 from urllib.error import URLError
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import Request
 from xml.sax.saxutils import escape
 
 from PIL import Image as PILImage
@@ -30,6 +30,8 @@ from reportlab.platypus import (
     TableStyle,
 )
 from reportlab.platypus.tableofcontents import TableOfContents
+
+from app.services.safe_fetch import MAX_IMAGE_BYTES, open_public_url, read_limited
 
 INK = colors.HexColor("#14170f")
 BODY_INK = colors.HexColor("#23261e")
@@ -140,8 +142,8 @@ def _fetch_image(url: str | None, aspect: float) -> bytes | None:
         return None
     try:
         request = Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; DefenseBriefPDF/1.0)"})
-        with urlopen(request, timeout=IMAGE_TIMEOUT_SECONDS) as response:
-            data = response.read()
+        with open_public_url(request, timeout=IMAGE_TIMEOUT_SECONDS) as response:
+            data = read_limited(response, MAX_IMAGE_BYTES)
     except (URLError, OSError, ValueError):
         return None
 

@@ -32,6 +32,12 @@ def test_page_text_is_the_story_without_menus_captions_or_asides() -> None:
     assert article_text_from_page(PAGE) == "\n\n".join(STORY)
 
 
+def test_page_text_drops_invisible_characters_hidden_in_words() -> None:
+    marked = STORY[0].replace("police", "pol\u200bice").replace("raided", "\u2060raided")
+
+    assert article_text_from_page(PAGE.replace(STORY[0], marked)).split("\n\n")[0] == STORY[0]
+
+
 def test_page_text_keeps_only_the_opening_of_a_long_story() -> None:
     long_page = "<article>" + "".join(f"<p>{p} Paragraph {i}.</p>" for i in range(60) for p in STORY[:1]) + "</article>"
 
@@ -156,6 +162,65 @@ def test_fill_missing_article_text_reads_each_shown_story_once(monkeypatch) -> N
         fetched.clear()
         assert service.fill_missing_article_text(source) == 0
         assert fetched == [unreachable.original_url]
+    finally:
+        db.rollback()
+        db.delete(source)
+        db.commit()
+        db.close()
+
+
+def test_stories_from_a_site_that_refuses_us_take_text_from_another_outlets_copy(monkeypatch) -> None:
+    import app.services.collector as collector_module
+    from app.services.syndicated_copies import SyndicatedCopy
+
+    db = SessionLocal()
+    source = Source(
+        name=f"Wire Refusing Pages {uuid4().hex[:8]}", website_url="https://www.wire.example/world/",
+        feed_url="https://news.google.com/rss/search?q=wire", source_type="rss", is_active=True,
+    )
+    db.add(source)
+    db.commit()
+    now = datetime.now(timezone.utc)
+    searched = []
+
+    def refusing_fetch(self, url, publisher_url=None):
+        self._blocked_hosts.add("www.wire.example")
+        return None
+
+    def fake_find(collector, title, publisher_host, want_image, want_text):
+        searched.append((title.split()[0], want_image, want_text))
+        return SyndicatedCopy(text="\n\n".join(STORY), text_credit="Yahoo News") if "Copied" in title else None
+
+    monkeypatch.setattr(SourceCollectorService, "_fetch_article_html", refusing_fetch)
+    monkeypatch.setattr(collector_module, "find_syndicated_copy", fake_find)
+
+    def article(label, image_url="https://img.example.com/own.jpg"):
+        title = f"{label} wire story {uuid4().hex}"
+        row = Article(
+            source_id=source.id, title=title, normalized_title=ArticleRepository.normalize_title(title),
+            original_url=f"https://news.google.com/rss/articles/{uuid4().hex}", summary="One line.",
+            image_url=image_url, relevance_score=80, published_at=now,
+        )
+        db.add(row)
+        return row
+
+    try:
+        copied = article("Copied")
+        uncopied = article("Uncopied", image_url=None)
+        db.commit()
+
+        service = SourceCollectorService(db)
+        # Its own pages are refused: nothing is marked, the copies are searched instead.
+        assert service.fill_missing_article_text(source) == 0
+        assert service.borrow_from_syndicated_copies(source) == 1
+        db.refresh(copied)
+        db.refresh(uncopied)
+
+        assert sorted(searched) == [("Copied", False, True), ("Uncopied", True, True)]
+        assert (copied.content_excerpt, copied.text_credit) == ("\n\n".join(STORY), "Yahoo News")
+        assert copied.text_lookup_at is not None and copied.image_lookup_at is None
+        assert uncopied.content_excerpt is None
+        assert uncopied.text_lookup_at is not None and uncopied.image_lookup_at is not None
     finally:
         db.rollback()
         db.delete(source)

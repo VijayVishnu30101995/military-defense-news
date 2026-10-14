@@ -700,12 +700,21 @@ function parseKeyPoints(value) {
 
 // Feed descriptions are often just the opening of the body cut off with "...", so when the
 // full text is present its first paragraph becomes the standfirst instead of the truncated teaser.
+// A summary that is only the headline again, often with the outlet's name appended
+// ("Eleven sailors missing ... Reuters"), says nothing new.
+function repeatsHeadline(summary, title) {
+  const words = (text) => String(text || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+  const head = words(title);
+  return Boolean(head) && words(summary).startsWith(head) && words(summary).length - head.length <= 30;
+}
+
 function articleText(article) {
   const paragraphs = String(article.content_excerpt || '')
     .split(/\n{2,}/)
     .map((part) => part.trim())
     .filter(Boolean);
-  const summary = String(article.summary || article.description || '').trim();
+  let summary = String(article.summary || article.description || '').trim();
+  if (paragraphs.length && repeatsHeadline(summary, article.title)) summary = '';
   const teaser = summary.replace(/\s*(\[?(\.\.\.|…)\]?)\s*$/, '').slice(0, 100);
   if (paragraphs.length && (!summary || paragraphs.join(' ').startsWith(teaser))) {
     return { standfirst: paragraphs[0], paragraphs: paragraphs.slice(1) };
@@ -794,6 +803,7 @@ function openArticleDetail(articleId) {
                 <h4>Full report</h4>
                 <p>${escapeHtml(missingTextNote(article.original_url, sourceName))}</p>
               </div>`}
+          ${article.text_credit && paragraphs.length ? `<p class="photo-credit">Text: ${escapeHtml(article.text_credit)}, from its report of the same story</p>` : ''}
           ${keyPoints.length ? `
             <div class="article-detail-section">
               <h4>Key points</h4>

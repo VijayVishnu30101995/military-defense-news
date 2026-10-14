@@ -82,7 +82,14 @@ class Article(Base):
         nullable=True,
     )
 
-    # When the story's page was read for text it lacked, so each story is tried once.
+    # Set when content_excerpt is another outlet's copy of the story: that outlet's name.
+    text_credit: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    # When the story's page (or another outlet's copy) was read for text it lacked, so each
+    # story is tried once.
     text_lookup_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,

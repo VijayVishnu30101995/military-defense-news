@@ -360,17 +360,20 @@ def test_feed_summary_drops_joomla_placeholders() -> None:
 def test_syndicated_photos_search_each_shown_story_once(monkeypatch) -> None:
     import app.services.collector as collector_module
     from app.models.article import Article
+    from app.services.syndicated_copies import SyndicatedCopy
 
     db = SessionLocal()
     wire = _make_source(db, "Wire Blocking Pages")
     now = datetime.now(timezone.utc)
     searched = []
 
-    def fake_find(collector, title, publisher_host):
+    def fake_find(collector, title, publisher_host, want_image, want_text):
         searched.append((title, publisher_host))
-        return ("https://img.example.com/copy.jpg", "Yahoo News") if "found" in title else None
+        # The site has not refused us, so its own pages supply the text.
+        assert (want_image, want_text) == (True, False)
+        return SyndicatedCopy("https://img.example.com/copy.jpg", "Yahoo News") if "found" in title else None
 
-    monkeypatch.setattr(collector_module, "find_syndicated_photo", fake_find)
+    monkeypatch.setattr(collector_module, "find_syndicated_copy", fake_find)
 
     def article(title, relevance=80, image_url=None, published_at=now):
         row = Article(
@@ -394,7 +397,7 @@ def test_syndicated_photos_search_each_shown_story_once(monkeypatch) -> None:
         db.commit()
 
         service = SourceCollectorService(db)
-        assert service.borrow_syndicated_photos(wire) == 1
+        assert service.borrow_from_syndicated_copies(wire) == 1
         for row in (found, missing, hidden, has_photo, old):
             db.refresh(row)
 
@@ -406,7 +409,7 @@ def test_syndicated_photos_search_each_shown_story_once(monkeypatch) -> None:
 
         # A story already searched is not searched again on the next run.
         searched.clear()
-        assert service.borrow_syndicated_photos(wire) == 0
+        assert service.borrow_from_syndicated_copies(wire) == 0
         assert searched == []
     finally:
         db.rollback()

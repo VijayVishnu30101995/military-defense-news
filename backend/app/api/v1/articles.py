@@ -80,6 +80,7 @@ def _serialize_article(db: Session, article: Article, category_names: list[str] 
         "content_excerpt": article.content_excerpt,
         "image_url": article.image_url,
         "image_credit": article.image_credit,
+        "text_credit": article.text_credit,
         "original_url": article.original_url,
         "canonical_url": article.canonical_url,
         "author": article.author,

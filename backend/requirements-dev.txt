@@ -1,0 +1,5 @@
+-r requirements.txt
+
+pytest==9.1.1
+# Starlette's TestClient needs this; the deployed app doesn't.
+httpx2==2.13.1

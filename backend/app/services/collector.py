@@ -13,6 +13,7 @@ from urllib.parse import urljoin, urlparse
 from xml.etree import ElementTree
 
 from googlenewsdecoder import gnewsdecoder
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -26,10 +27,17 @@ from app.schemas.article import ArticleCreate
 from app.schemas.collection import CollectionRunResponse
 from app.schemas.source_collection_job import SourceCollectionJobCreate
 from app.services.alerts import alert_source_failure
-from app.services.feed_text import body_text_from_html, clean_author, clean_summary, score_importance, split_paragraphs
+from app.services.feed_text import (
+    article_text_from_page,
+    body_text_from_html,
+    clean_author,
+    clean_summary,
+    score_importance,
+    split_paragraphs,
+)
 from app.services.safe_fetch import MAX_FEED_BYTES, MAX_PAGE_BYTES, open_public_url, read_limited
 from app.services.source_collection_job import SourceCollectionJobService
-from app.services.syndicated_photos import find_syndicated_photo
+from app.services.syndicated_copies import find_syndicated_copy
 
 logger = logging.getLogger(__name__)
 
@@ -65,9 +73,15 @@ IMAGE_BORROW_WINDOW = timedelta(hours=48)
 IMAGE_BORROW_LOOKBACK = timedelta(days=3)
 # Searching other outlets' copies costs ~10s a story (a search, a decode and a page fetch),
 # so each run looks up a bounded number of stories in parallel within a time budget.
-SYNDICATED_PHOTO_MAX_STORIES = 20
-SYNDICATED_PHOTO_WORKERS = 4
-SYNDICATED_PHOTO_BUDGET_SECONDS = 150
+SYNDICATED_COPY_MAX_STORIES = 20
+SYNDICATED_COPY_WORKERS = 4
+SYNDICATED_COPY_BUDGET_SECONDS = 150
+# Stories stored before their page text was read: how many to fill in per run, and how far back.
+ARTICLE_TEXT_BACKFILL_MAX_STORIES = 25
+ARTICLE_TEXT_BACKFILL_LOOKBACK = timedelta(days=7)
+ARTICLE_TEXT_MAX_FAILURES = 3
+# A feed summary longer than this is the whole story, not a summary.
+LONG_SUMMARY_CHARS = 600
 HEADLINE_STOPWORDS = frozenset(
     "the and for with from into over after amid about against says said say its their his her "
     "this that than are was were has have had will would could new".split()
@@ -420,13 +434,15 @@ class SourceCollectorService:
             logger.warning("Could not fetch article page %s: %s", article_url, exc)
             return None
 
-    def _best_article_image(self, article_url: str, item: dict, source: Source) -> str | None:
+    def _best_article_image(self, article_url: str, item: dict, source: Source, html: str | None = None) -> str | None:
         """Pick the image shown for a story: the article's own lead image first.
 
         Feed thumbnails are often a section or category graphic shared across many
         stories, so they only win when the article page offers nothing usable.
+        `html` is the article page when the caller has already fetched it.
         """
-        html = self._fetch_article_html(article_url, item.get("publisher_url"))
+        if html is None:
+            html = self._fetch_article_html(article_url, item.get("publisher_url"))
         base = source.website_url
         return (
             self._extract_image_from_html(html, fallback_base_url=base or article_url, include_inline=False)
@@ -521,47 +537,129 @@ class SourceCollectorService:
             self.db.commit()
         return changed
 
-    def borrow_syndicated_photos(self, source: Source) -> int:
-        """Give this source's recent photo-less stories a photo from another outlet's copy.
+    def fill_missing_article_text(self, source: Source) -> int:
+        """Read the opening paragraphs for this source's recent stories stored without any.
 
-        For publishers that block page fetches (Reuters), this is the only way their stories
-        get a photo. Each story is searched once; stories the time budget doesn't reach are
-        left unmarked and tried on the next run. Returns how many stories received a photo.
+        Covers stories collected before page text was read. A page that was read is not
+        tried again (text_lookup_at). A page that could not be fetched is retried next run,
+        and after a few such failures the site is left alone for this run. Stories from a
+        site that refuses us are left to borrow_from_syndicated_copies. Returns how many
+        stories received text.
         """
         now = datetime.now(timezone.utc)
         targets = (
             self.db.query(Article)
             .filter(Article.source_id == source.id)
-            .filter(Article.image_url.is_(None))
-            .filter(Article.image_lookup_at.is_(None))
-            .filter(Article.published_at >= now - IMAGE_BORROW_LOOKBACK)
+            .filter(Article.content_excerpt.is_(None))
+            .filter(Article.text_lookup_at.is_(None))
+            .filter(Article.published_at >= now - ARTICLE_TEXT_BACKFILL_LOOKBACK)
+            .filter(Article.relevance_score >= settings.relevance_threshold)
+            .order_by(Article.published_at.desc())
+            .limit(ARTICLE_TEXT_BACKFILL_MAX_STORIES)
+            .all()
+        )
+        changed = failures = 0
+        for article in targets:
+            html = self._fetch_article_html(article.original_url, source.website_url)
+            if html is None and self._site_refuses(source):
+                # Left for borrow_from_syndicated_copies, which reads another outlet's copy.
+                continue
+            if html is None and urlparse(article.original_url).hostname in self._blocked_hosts:
+                # Another site that refused us (an aggregator's publisher): give up on it.
+                article.text_lookup_at = now
+                continue
+            if html is None:
+                failures += 1
+                if failures >= ARTICLE_TEXT_MAX_FAILURES:
+                    break
+                continue
+            article.text_lookup_at = now
+            body = article_text_from_page(html)
+            if not body:
+                continue
+            article.content_excerpt = body
+            # The whole story was stored as its summary (see LONG_SUMMARY_CHARS).
+            if article.summary and len(article.summary) > LONG_SUMMARY_CHARS:
+                article.summary = article.description = split_paragraphs(body)[0]
+            changed += 1
+        self.db.commit()
+        return changed
+
+    def _site_refuses(self, source: Source) -> bool:
+        """Whether this source's site refused our page fetches during this run."""
+        return urlparse(source.website_url or "").hostname in self._blocked_hosts
+
+    def borrow_from_syndicated_copies(self, source: Source) -> int:
+        """Fill this source's recent stories from another outlet's copy of the same story.
+
+        Photo-less stories get the copy's photo. When the source's own site refuses page
+        fetches (Reuters), stories without text also get the copy's opening paragraphs;
+        for every other site, fill_missing_article_text reads the story's own page.
+        Each story is searched once for each; stories the time budget doesn't reach are
+        left unmarked and tried on the next run. Returns how many stories received something.
+        """
+        now = datetime.now(timezone.utc)
+        needs_photo = and_(
+            Article.image_url.is_(None),
+            Article.image_lookup_at.is_(None),
+            Article.published_at >= now - IMAGE_BORROW_LOOKBACK,
+        )
+        needs_text = and_(
+            Article.content_excerpt.is_(None),
+            Article.text_lookup_at.is_(None),
+            Article.published_at >= now - ARTICLE_TEXT_BACKFILL_LOOKBACK,
+        )
+        targets = (
+            self.db.query(Article)
+            .filter(Article.source_id == source.id)
+            .filter(or_(needs_photo, needs_text) if self._site_refuses(source) else needs_photo)
             # Only stories that will be shown are worth the search.
             .filter(Article.relevance_score >= settings.relevance_threshold)
             .order_by(Article.published_at.desc())
-            .limit(SYNDICATED_PHOTO_MAX_STORIES)
+            .limit(SYNDICATED_COPY_MAX_STORIES)
             .all()
         )
         if not targets:
             return 0
 
+        refused = self._site_refuses(source)
+        wants = {
+            article.id: (
+                article.image_url is None and article.image_lookup_at is None
+                and article.published_at >= now - IMAGE_BORROW_LOOKBACK,
+                refused and article.content_excerpt is None and article.text_lookup_at is None,
+            )
+            for article in targets
+        }
         publisher_host = urlparse(source.website_url or "").hostname
-        pool = ThreadPoolExecutor(max_workers=SYNDICATED_PHOTO_WORKERS, thread_name_prefix="syndicated-photo")
-        futures = {pool.submit(find_syndicated_photo, self, article.title, publisher_host): article for article in targets}
+        pool = ThreadPoolExecutor(max_workers=SYNDICATED_COPY_WORKERS, thread_name_prefix="syndicated-copy")
+        futures = {
+            pool.submit(find_syndicated_copy, self, article.title, publisher_host, *wants[article.id]): article
+            for article in targets
+        }
         changed = 0
         try:
-            for future in as_completed(futures, timeout=SYNDICATED_PHOTO_BUDGET_SECONDS):
+            for future in as_completed(futures, timeout=SYNDICATED_COPY_BUDGET_SECONDS):
                 article = futures[future]
-                article.image_lookup_at = now
+                want_image, want_text = wants[article.id]
+                if want_image:
+                    article.image_lookup_at = now
+                if want_text:
+                    article.text_lookup_at = now
                 try:
                     found = future.result()
                 except Exception:
-                    logger.exception("Syndicated photo lookup crashed for article %s", article.id)
+                    logger.exception("Syndicated copy lookup crashed for article %s", article.id)
                     continue
-                if found:
-                    article.image_url, article.image_credit = found
-                    changed += 1
+                if found is None:
+                    continue
+                if want_image and found.image_url:
+                    article.image_url, article.image_credit = found.image_url, found.image_credit
+                if want_text and found.text:
+                    article.content_excerpt, article.text_credit = found.text, found.text_credit
+                changed += 1
         except FuturesTimeoutError:
-            logger.info("Source %s: syndicated photo lookups hit the time budget; the rest wait for the next run", source.id)
+            logger.info("Source %s: syndicated copy lookups hit the time budget; the rest wait for the next run", source.id)
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
 
@@ -602,12 +700,14 @@ class SourceCollectorService:
             image_url = self._extract_image_url(item, fallback_base_url=fallback_base_url)
 
             summary = None
+            summary_html = None
             for name in ["description", "summary", "content"]:
                 node = item.find(name)
                 if node is None:
                     node = item.find(f"{{http://www.w3.org/2005/Atom}}{name}")
                 if node is not None:
                     summary = self._safe_text(node)
+                    summary_html = "".join(node.itertext())
                     break
 
             published = None
@@ -627,6 +727,12 @@ class SourceCollectorService:
                 body_node = item.find(f"{{{ATOM_NS}}}content")
             body = body_text_from_html("".join(body_node.itertext())) if body_node is not None else None
             summary = clean_summary(summary)
+            # Some feeds (Army Recognition) put the whole story in the description. Keep its
+            # paragraphs as the body and its opening paragraph as the summary.
+            if not body and summary and len(summary) > LONG_SUMMARY_CHARS:
+                body = body_text_from_html(summary_html)
+                if body:
+                    summary = split_paragraphs(body)[0]
             if not summary and body:
                 summary = split_paragraphs(body)[0]
 
@@ -787,6 +893,9 @@ class SourceCollectorService:
                     duplicate.published_at = self._parse_datetime(item.get("published"))
                 if not duplicate.content_excerpt and item.get("body"):
                     duplicate.content_excerpt = item.get("body")
+                    # Stored before the feed's full description was split into body and summary.
+                    if duplicate.summary and len(duplicate.summary) > LONG_SUMMARY_CHARS:
+                        duplicate.summary = duplicate.description = item.get("summary")
                 if not duplicate.author and item.get("author"):
                     duplicate.author = item.get("author")
                 if duplicate.importance_score is None or duplicate.importance_score == 50:
@@ -796,7 +905,10 @@ class SourceCollectorService:
                 self.db.commit()
                 continue
 
-            image_url = self._best_article_image(link, item, source)
+            html = self._fetch_article_html(link, item.get("publisher_url"))
+            image_url = self._best_article_image(link, item, source, html=html)
+            # Feeds that send only a one-line summary: take the story's opening from its page.
+            body = item.get("body") or article_text_from_page(html)
             article_data = ArticleCreate(
                 source_id=source_id,
                 title=title,
@@ -804,7 +916,7 @@ class SourceCollectorService:
                 canonical_url=normalized_url,
                 description=item.get("summary"),
                 summary=item.get("summary"),
-                content_excerpt=item.get("body"),
+                content_excerpt=body,
                 author=item.get("author"),
                 image_url=image_url,
                 language=source.language,
@@ -816,7 +928,9 @@ class SourceCollectorService:
                 relevance_score=relevance,
                 categories=self._infer_categories(title, item.get("summary")),
             )
-            self.article_repository.create(article_data)
+            article = self.article_repository.create(article_data)
+            # Its page was just read; fill_missing_article_text need not read it again.
+            article.text_lookup_at = datetime.now(timezone.utc)
             # Flush so later items in this same feed (aggregators like Google News
             # often repeat a story across queries) are caught by find_duplicate,
             # which otherwise can't see uncommitted adds on this autoflush=False session.
@@ -833,11 +947,19 @@ class SourceCollectorService:
             self.db.rollback()
 
         try:
-            syndicated = self.borrow_syndicated_photos(source)
-            if syndicated:
-                logger.info("Source %s (%s): %d stories took a photo from another outlet's copy", source_id, source.name, syndicated)
+            filled = self.fill_missing_article_text(source)
+            if filled:
+                logger.info("Source %s (%s): %d older stories took their opening paragraphs from their pages", source_id, source.name, filled)
         except Exception:
-            logger.exception("Syndicated photo lookup failed after collecting source %s", source_id)
+            logger.exception("Filling article text failed after collecting source %s", source_id)
+            self.db.rollback()
+
+        try:
+            syndicated = self.borrow_from_syndicated_copies(source)
+            if syndicated:
+                logger.info("Source %s (%s): %d stories took a photo or text from another outlet's copy", source_id, source.name, syndicated)
+        except Exception:
+            logger.exception("Syndicated copy lookup failed after collecting source %s", source_id)
             self.db.rollback()
 
         # The run still counts as a success (the feed was reachable and parsed), but an

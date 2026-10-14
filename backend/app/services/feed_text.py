@@ -4,8 +4,21 @@ import re
 from html import unescape
 from html.parser import HTMLParser
 
+from selectolax.parser import HTMLParser as PageParser
+
 MAX_BODY_CHARS = 20000
 MIN_BODY_WORDS = 60
+# Text taken from a publisher's web page (not offered in its feed) is kept to the opening
+# of the story; the reader continues on the publisher's site.
+MAX_PAGE_EXCERPT_CHARS = 3000
+MIN_PAGE_PARAGRAPH_WORDS = 8
+# Invisible characters some wire copies scatter inside words to fingerprint the text.
+_INVISIBLE = re.compile("[\u200b-\u200f\u2060\ufeff\u00ad]")
+# Common English words: real English prose is full of them, a translation is not.
+_ENGLISH_WORDS = frozenset("the a an and of to in on for with by from at as is was are were that this it said says has have".split())
+MIN_ENGLISH_SHARE = 0.15
+# Paragraphs inside these are site furniture, not the story.
+_PAGE_NOISE = "nav, header, footer, aside, figure, figcaption, form, noscript, [role=complementary], [aria-hidden=true]"
 
 _BLOCK_TAGS = {
     "p", "div", "section", "article", "br", "h1", "h2", "h3", "h4", "h5", "h6",
@@ -17,8 +30,13 @@ _BOILERPLATE = [
     re.compile(r"^the post .+ appeared first on .+\.?$", re.I),
     re.compile(r"^(advertisement|related:?|read more:?|subscribe.*|sign up.*newsletter.*)$", re.I),
     re.compile(r"^continue reading", re.I),
+    re.compile(r"^related (topics?|articles?|stories|news)\s*:", re.I),
     re.compile(r"^contact the authors?:", re.I),
 ]
+# A photo caption flattened into the text, e.g. "... launchers (Picture Source: Lockheed Martin)".
+_PHOTO_CAPTION = re.compile(r"\(\s*(?:picture|photo|image) (?:source|credit)s?:[^)]*\)\s*$", re.I)
+# Where the story ends and the site's reading list or author bio begins.
+_STORY_END = re.compile(r"^(explore more\b|written by\b)", re.I)
 _TRAILING_POST_NOTICE = re.compile(r"\s*The post .+? appeared first on .+?\.?\s*$", re.I | re.S)
 # Joomla module placeholders that some sites (Army Recognition) leak into feed text.
 _CMS_PLACEHOLDER = re.compile(r"\{load(?:position|module)\s[^}]*\}", re.I)
@@ -82,8 +100,10 @@ def html_to_paragraphs(html: str | None) -> list[str]:
 
     paragraphs = []
     for paragraph in parser.paragraphs:
-        cleaned = paragraph.replace("\xa0", " ").strip()
-        if not cleaned or any(pattern.match(cleaned) for pattern in _BOILERPLATE):
+        cleaned = re.sub(r"\s+", " ", _CMS_PLACEHOLDER.sub(" ", _INVISIBLE.sub("", paragraph.replace("\xa0", " ")))).strip()
+        if paragraphs and _STORY_END.match(cleaned):
+            break
+        if not cleaned or _PHOTO_CAPTION.search(cleaned) or any(pattern.match(cleaned) for pattern in _BOILERPLATE):
             continue
         if paragraphs and paragraphs[-1] == cleaned:
             continue
@@ -105,6 +125,52 @@ def body_text_from_html(html: str | None) -> str | None:
         kept.append(paragraph)
         length += len(paragraph) + 2
     return "\n\n".join(kept) or None
+
+
+def article_text_from_page(html: str | None) -> str | None:
+    """The opening paragraphs of the story on an article page, or None if none are found.
+
+    The story is the element holding the most paragraph text; menus, captions and
+    "related" boxes hold less, so they lose. Short lines ("Share", bylines) are skipped.
+    """
+    if not html:
+        return None
+    try:
+        tree = PageParser(html)
+    except Exception:
+        return None
+    for node in tree.css(_PAGE_NOISE):
+        node.decompose()
+
+    groups: dict[int, list[str]] = {}
+    for node in tree.css("p"):
+        parent = node.parent
+        if parent is None:
+            continue
+        text = re.sub(r"\s+", " ", _INVISIBLE.sub("", node.text(separator=" "))).strip()
+        if len(text.split()) < MIN_PAGE_PARAGRAPH_WORDS or any(pattern.match(text) for pattern in _BOILERPLATE):
+            continue
+        groups.setdefault(parent.mem_id, []).append(text)
+    if not groups:
+        return None
+    paragraphs = max(groups.values(), key=lambda texts: sum(len(t.split()) for t in texts))
+    if sum(len(p.split()) for p in paragraphs) < MIN_BODY_WORDS:
+        return None
+
+    kept: list[str] = []
+    length = 0
+    for paragraph in paragraphs:
+        if kept and length + len(paragraph) > MAX_PAGE_EXCERPT_CHARS:
+            break
+        if not kept or kept[-1] != paragraph:
+            kept.append(paragraph)
+            length += len(paragraph) + 2
+    return "\n\n".join(kept)
+
+
+def looks_english(text: str | None) -> bool:
+    words = re.findall(r"[a-z']+", (text or "").lower())
+    return bool(words) and sum(word in _ENGLISH_WORDS for word in words) / len(words) >= MIN_ENGLISH_SHARE
 
 
 def split_paragraphs(body: str | None) -> list[str]:

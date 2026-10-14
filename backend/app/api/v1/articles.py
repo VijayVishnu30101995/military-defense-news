@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
@@ -213,23 +214,45 @@ def list_categories(db: Session = Depends(get_db)) -> list[dict]:
     ]
 
 
-@router.get("/articles")
-def list_articles(
-    page: int = 1,
-    page_size: int = 12,
+@dataclass
+class ArticleFilters:
+    q: str | None = None
+    category_id: int | None = None
+    country_id: int | None = None
+    region_id: int | None = None
+    source_id: int | None = None
+    # Calendar days in NEWS_TIMEZONE, matched against when the story was published.
+    published_from: date | None = None
+    published_to: date | None = None
+
+
+def article_filters(
     q: str | None = None,
     category_id: int | None = None,
     country_id: int | None = None,
     region_id: int | None = None,
     source_id: int | None = None,
-    db: Session = Depends(get_db),
-) -> dict:
-    page = max(page, 1)
-    page_size = max(1, min(page_size, 100))
+    published_from: date | None = None,
+    published_to: date | None = None,
+) -> ArticleFilters:
+    if published_from and published_to and published_from > published_to:
+        raise HTTPException(
+            status_code=422,
+            detail="The start date must be on or before the end date.",
+        )
+    return ArticleFilters(q, category_id, country_id, region_id, source_id, published_from, published_to)
 
+
+def _day_start(day: date) -> datetime:
+    """Midnight at the start of `day` in the newsroom's timezone."""
+    return datetime.combine(day, time.min, tzinfo=ZoneInfo(settings.news_timezone))
+
+
+def _matching_ids(db: Session, filters: ArticleFilters) -> list[int]:
+    """Ids of every visible story matching `filters`, newest first."""
     query = db.query(Article).filter(_visible_filter())
-    if q and q.strip():
-        term = f"%{q.strip()}%"
+    if filters.q and filters.q.strip():
+        term = f"%{filters.q.strip()}%"
         category_match = (
             db.query(ArticleCategory.article_id)
             .join(Category, Category.id == ArticleCategory.category_id)
@@ -243,16 +266,24 @@ def list_articles(
                 Article.id.in_(category_match),
             )
         )
-    if category_id is not None:
+    if filters.category_id is not None:
         query = query.filter(
-            Article.id.in_(db.query(ArticleCategory.article_id).filter(ArticleCategory.category_id == category_id))
+            Article.id.in_(
+                db.query(ArticleCategory.article_id).filter(ArticleCategory.category_id == filters.category_id)
+            )
         )
-    if country_id is not None:
-        query = query.filter(Article.country_id == country_id)
-    if region_id is not None:
-        query = query.filter(Article.region_id == region_id)
-    if source_id is not None:
-        query = query.filter(Article.source_id == source_id)
+    if filters.country_id is not None:
+        query = query.filter(Article.country_id == filters.country_id)
+    if filters.region_id is not None:
+        query = query.filter(Article.region_id == filters.region_id)
+    if filters.source_id is not None:
+        query = query.filter(Article.source_id == filters.source_id)
+    # Stories without a publication date can't be placed in a range, so a date filter
+    # leaves them out rather than guessing from when they were collected.
+    if filters.published_from is not None:
+        query = query.filter(Article.published_at >= _day_start(filters.published_from))
+    if filters.published_to is not None:
+        query = query.filter(Article.published_at < _day_start(filters.published_to + timedelta(days=1)))
 
     # Scored rows are already excluded in SQL; only the legacy nulls still need the
     # keyword pass, so just the id and text columns are loaded for the whole result set.
@@ -261,12 +292,24 @@ def list_articles(
     ).order_by(
         Article.published_at.desc().nullslast(), Article.collected_at.desc()
     ).all()
-    ordered_ids = [
+    return [
         row.id
         for row in candidates
         if row.relevance_score is not None
         or not is_off_topic_story(row.title, row.summary or row.description)
     ]
+
+
+@router.get("/articles")
+def list_articles(
+    page: int = 1,
+    page_size: int = 12,
+    filters: ArticleFilters = Depends(article_filters),
+    db: Session = Depends(get_db),
+) -> dict:
+    page = max(page, 1)
+    page_size = max(1, min(page_size, 100))
+    ordered_ids = _matching_ids(db, filters)
 
     start = (page - 1) * page_size
     page_ids = ordered_ids[start:start + page_size]
@@ -276,6 +319,39 @@ def list_articles(
         "total": len(ordered_ids),
         "page": page,
         "page_size": page_size,
+    }
+
+
+# Declared before /articles/{article_id}, which would otherwise try to read "selection" as an id.
+@router.get("/articles/selection")
+def select_matching_articles(
+    limit: int = 500,
+    filters: ArticleFilters = Depends(article_filters),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Every story matching the filters, in brief, for "Select all" across pages."""
+    ordered_ids = _matching_ids(db, filters)
+    selected_ids = ordered_ids[: max(1, min(limit, 500))]
+    rows = (
+        db.query(Article.id, Article.title, Article.source_id, Article.published_at, Article.image_url)
+        .filter(Article.id.in_(selected_ids))
+        .all()
+        if selected_ids
+        else []
+    )
+    by_id = {row.id: row for row in rows}
+    return {
+        "items": [
+            {
+                "id": by_id[article_id].id,
+                "title": by_id[article_id].title,
+                "source_id": by_id[article_id].source_id,
+                "published_at": by_id[article_id].published_at.isoformat() if by_id[article_id].published_at else None,
+                "image_url": by_id[article_id].image_url,
+            }
+            for article_id in selected_ids
+        ],
+        "total": len(ordered_ids),
     }
 
 

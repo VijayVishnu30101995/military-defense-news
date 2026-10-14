@@ -23,6 +23,8 @@ const categoryChips = document.getElementById('categoryChips');
 const countryFilter = document.getElementById('countryFilter');
 const regionFilter = document.getElementById('regionFilter');
 const sourceFilter = document.getElementById('sourceFilter');
+const dateFromFilter = document.getElementById('dateFromFilter');
+const dateToFilter = document.getElementById('dateToFilter');
 const resetFiltersBtn = document.getElementById('resetFiltersBtn');
 const articleCountLabel = document.getElementById('articleCountLabel');
 const articleResults = document.getElementById('articleResults');
@@ -73,6 +75,9 @@ const state = {
   categories: [],
   sources: [],
   currentPage: 1,
+  // The current page of results and the total matching the filters, for selection.
+  pageItems: [],
+  filteredTotal: 0,
 };
 
 function getToken() {
@@ -625,6 +630,9 @@ function renderArticleResults(result) {
   const total = result.total || 0;
   const page = result.page || 1;
   articleCountLabel.textContent = `${total} item${total === 1 ? '' : 's'}`;
+  state.pageItems = pageItems;
+  state.filteredTotal = total;
+  renderSelectionBar();
 
   if (!total) {
     articleResults.innerHTML = '<div class="empty-state">No stories match the current filters.</div>';
@@ -642,10 +650,15 @@ function renderArticleResults(result) {
     }) : 'Recent';
 
     const source = getSourceName(article.source_id);
+    const selected = reportSelection.has(article.id);
     return `
-      <article class="article-card${isPriority(article) ? ' priority' : ''}" data-open-article="${article.id}"
+      <article class="article-card${isPriority(article) ? ' priority' : ''}${selected ? ' selected' : ''}" data-open-article="${article.id}"
         tabindex="0" role="button" aria-label="Open brief: ${escapeHtml(article.title)}">
         <div class="article-card-image">
+          <label class="select-box" title="Select for report">
+            <input type="checkbox" data-select-article="${article.id}" ${selected ? 'checked' : ''}
+              aria-label="Select for report: ${escapeHtml(article.title)}" />
+          </label>
           ${imageHtml(article.image_url, categories)}
           ${source ? `<span class="card-source">${escapeHtml(source)}</span>` : ''}
         </div>
@@ -944,16 +957,26 @@ categoryChips.addEventListener('click', (event) => {
   loadArticles();
 });
 
-async function loadArticles(page = 1) {
-  const requestId = ++articleRequestId;
-  syncCategoryChips();
-  const params = new URLSearchParams({ page: String(page), page_size: String(PAGE_SIZE) });
+// The filters as API query parameters, shared by the result list and "Select all".
+function currentFilterParams() {
+  const params = new URLSearchParams();
   const search = searchInput.value.trim();
   if (search) params.set('q', search);
   if (categoryFilter.value) params.set('category_id', categoryFilter.value);
   if (countryFilter.value) params.set('country_id', countryFilter.value);
   if (regionFilter.value) params.set('region_id', regionFilter.value);
   if (sourceFilter.value) params.set('source_id', sourceFilter.value);
+  if (dateFromFilter.value) params.set('published_from', dateFromFilter.value);
+  if (dateToFilter.value) params.set('published_to', dateToFilter.value);
+  return params;
+}
+
+async function loadArticles(page = 1) {
+  const requestId = ++articleRequestId;
+  syncCategoryChips();
+  const params = currentFilterParams();
+  params.set('page', String(page));
+  params.set('page_size', String(PAGE_SIZE));
 
   try {
     const result = await api(`/articles?${params}`);
@@ -961,7 +984,7 @@ async function loadArticles(page = 1) {
     state.currentPage = result.page;
     renderArticleResults(result);
   } catch (error) {
-    articleResults.innerHTML = `<div class="empty-state">Unable to load articles: ${error.message}</div>`;
+    articleResults.innerHTML = `<div class="empty-state">Unable to load articles: ${escapeHtml(error.message)}</div>`;
   }
 }
 
@@ -1265,8 +1288,353 @@ function resetFilters() {
   countryFilter.value = '';
   regionFilter.value = '';
   sourceFilter.value = '';
+  dateFromFilter.value = '';
+  dateToFilter.value = '';
+  syncDateLimits();
   loadArticles();
 }
+
+// ---------------------------------------------------------------- report builder
+//
+// Readers tick stories across any filters and pages, then build a PDF from them. The
+// selection lives in localStorage so it survives filter changes, paging and reloads; a
+// Map keeps the order stories were ticked in, which is the "My order" starting point.
+
+const MAX_REPORT_ARTICLES = 50;
+const selectionKey = 'defense-brief-report-selection';
+const reportSelection = new Map();
+
+const selectionCountEl = document.getElementById('selectionCount');
+const selectAllBtn = document.getElementById('selectAllBtn');
+const deselectAllBtn = document.getElementById('deselectAllBtn');
+const openReportBtn = document.getElementById('openReportBtn');
+const reportModal = document.getElementById('reportModal');
+const reportTitleInput = document.getElementById('reportTitle');
+const reportDateFrom = document.getElementById('reportDateFrom');
+const reportDateTo = document.getElementById('reportDateTo');
+const reportOrder = document.getElementById('reportOrder');
+const reportArticleList = document.getElementById('reportArticleList');
+const reportSelectedCount = document.getElementById('reportSelectedCount');
+const reportNote = document.getElementById('reportNote');
+const previewReportBtn = document.getElementById('previewReportBtn');
+const downloadReportBtn = document.getElementById('downloadReportBtn');
+const reportPreviewFrame = document.getElementById('reportPreviewFrame');
+const reportPreviewLink = document.getElementById('reportPreviewLink');
+const reportPreviewEmpty = document.getElementById('reportPreviewEmpty');
+const reportOptionInputs = {
+  include_summary: document.getElementById('optSummary'),
+  include_dates: document.getElementById('optDates'),
+  include_sources: document.getElementById('optSources'),
+  include_images: document.getElementById('optImages'),
+  include_links: document.getElementById('optLinks'),
+};
+// The last PDF built, so Download right after Preview doesn't build it again.
+let lastReport = null;
+
+function selectionEntry(article) {
+  return {
+    id: article.id,
+    title: article.title,
+    source_id: article.source_id,
+    published_at: article.published_at,
+  };
+}
+
+function saveSelection() {
+  try {
+    localStorage.setItem(selectionKey, JSON.stringify([...reportSelection.values()]));
+  } catch (error) {
+    // Storage can be blocked; the selection then lasts only for this page load.
+  }
+}
+
+function restoreSelection() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(selectionKey) || '[]');
+    if (Array.isArray(saved)) {
+      saved.filter((item) => item && Number.isInteger(item.id)).forEach((item) => reportSelection.set(item.id, item));
+    }
+  } catch (error) {
+    // A missing or unreadable selection just starts empty.
+  }
+}
+
+function renderSelectionBar() {
+  const count = reportSelection.size;
+  selectionCountEl.textContent = String(count);
+  openReportBtn.disabled = count === 0;
+  selectAllBtn.textContent = state.filteredTotal ? `Select all ${state.filteredTotal}` : 'Select all';
+  selectAllBtn.disabled = !state.filteredTotal;
+  deselectAllBtn.disabled = count === 0;
+}
+
+function syncVisibleCheckboxes() {
+  articleResults.querySelectorAll('[data-select-article]').forEach((checkbox) => {
+    const selected = reportSelection.has(Number(checkbox.dataset.selectArticle));
+    checkbox.checked = selected;
+    checkbox.closest('.article-card')?.classList.toggle('selected', selected);
+  });
+}
+
+// Every story matching the current filters, across all pages.
+async function fetchFilteredSelection() {
+  return api(`/articles/selection?${currentFilterParams()}`);
+}
+
+async function selectAllFiltered() {
+  selectAllBtn.disabled = true;
+  try {
+    const result = await fetchFilteredSelection();
+    result.items.forEach((item) => {
+      if (!reportSelection.has(item.id)) reportSelection.set(item.id, selectionEntry(item));
+    });
+    saveSelection();
+    syncVisibleCheckboxes();
+  } catch (error) {
+    alert(`Unable to select stories: ${error.message}`);
+  } finally {
+    renderSelectionBar();
+  }
+}
+
+// "Deselect all" acts on the current filters, like "Select all"; with no filters set
+// that is the whole selection.
+async function deselectAllFiltered() {
+  deselectAllBtn.disabled = true;
+  try {
+    if (currentFilterParams().toString()) {
+      const result = await fetchFilteredSelection();
+      result.items.forEach((item) => reportSelection.delete(item.id));
+    } else {
+      reportSelection.clear();
+    }
+    saveSelection();
+    syncVisibleCheckboxes();
+  } catch (error) {
+    alert(`Unable to deselect stories: ${error.message}`);
+  } finally {
+    renderSelectionBar();
+  }
+}
+
+function localDay(value) {
+  // en-CA formats as YYYY-MM-DD, the value a date input expects.
+  return value ? new Date(value).toLocaleDateString('en-CA') : '';
+}
+
+function publishedTime(item) {
+  return item.published_at ? new Date(item.published_at).getTime() : null;
+}
+
+// The selection in the order the report will use.
+function orderedSelection() {
+  const items = [...reportSelection.values()];
+  if (reportOrder.value === 'custom') return items;
+  const direction = reportOrder.value === 'oldest' ? 1 : -1;
+  return items.sort((a, b) => {
+    const left = publishedTime(a);
+    const right = publishedTime(b);
+    if (left === null || right === null) return (left === null) - (right === null);
+    return (left - right) * direction;
+  });
+}
+
+function formatShortDate(value) {
+  return value ? new Date(value).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : 'Undated';
+}
+
+function renderReportList() {
+  const items = orderedSelection();
+  reportSelectedCount.textContent = `(${items.length})`;
+  reportArticleList.innerHTML = items.map((item, index) => `
+    <li class="report-item" data-report-id="${item.id}">
+      <span class="report-item-num">${String(index + 1).padStart(2, '0')}</span>
+      <div class="report-item-text">
+        <strong>${escapeHtml(item.title)}</strong>
+        <small>${escapeHtml([getSourceName(item.source_id), formatShortDate(item.published_at)].filter(Boolean).join(' · '))}</small>
+      </div>
+      <div class="report-item-actions">
+        <button type="button" class="secondary icon-btn" data-move="-1" aria-label="Move up" ${index === 0 ? 'disabled' : ''}>&uarr;</button>
+        <button type="button" class="secondary icon-btn" data-move="1" aria-label="Move down" ${index === items.length - 1 ? 'disabled' : ''}>&darr;</button>
+        <button type="button" class="secondary icon-btn" data-remove aria-label="Remove from report">&times;</button>
+      </div>
+    </li>
+  `).join('') || '<li class="report-empty">No articles selected. Tick stories in the results to add them.</li>';
+
+  const over = items.length - MAX_REPORT_ARTICLES;
+  reportNote.classList.toggle('hidden', over <= 0);
+  reportNote.textContent = over > 0
+    ? `A report can hold up to ${MAX_REPORT_ARTICLES} articles. Remove ${over} to continue.`
+    : '';
+  previewReportBtn.disabled = !items.length || over > 0;
+  downloadReportBtn.disabled = !items.length || over > 0;
+}
+
+function moveReportItem(id, step) {
+  const items = orderedSelection();
+  const from = items.findIndex((item) => item.id === id);
+  const to = from + step;
+  if (from < 0 || to < 0 || to >= items.length) return;
+  [items[from], items[to]] = [items[to], items[from]];
+  // Reordering by hand turns the displayed order into "My order".
+  reportSelection.clear();
+  items.forEach((item) => reportSelection.set(item.id, item));
+  reportOrder.value = 'custom';
+  saveSelection();
+  renderReportList();
+  reportArticleList.querySelector(`[data-report-id="${id}"] [data-move="${step}"]`)?.focus();
+}
+
+// The report's dates follow the filter until the reader edits them; with no date
+// filter they span the selected stories.
+function fillReportDates() {
+  const days = [...reportSelection.values()].map((item) => localDay(item.published_at)).filter(Boolean).sort();
+  if (reportDateFrom.dataset.edited !== 'true') reportDateFrom.value = dateFromFilter.value || days[0] || '';
+  if (reportDateTo.dataset.edited !== 'true') reportDateTo.value = dateToFilter.value || days[days.length - 1] || '';
+}
+
+function openReportBuilder() {
+  fillReportDates();
+  renderReportList();
+  reportModal.classList.remove('hidden');
+  reportModal.setAttribute('aria-hidden', 'false');
+  reportTitleInput.focus();
+}
+
+function closeReportBuilder() {
+  reportModal.classList.add('hidden');
+  reportModal.setAttribute('aria-hidden', 'true');
+  syncVisibleCheckboxes();
+  renderSelectionBar();
+  openReportBtn.focus();
+}
+
+function reportPayload() {
+  const payload = {
+    title: reportTitleInput.value.trim() || 'Daily Defence News Report',
+    date_from: reportDateFrom.value || null,
+    date_to: reportDateTo.value || null,
+    article_ids: orderedSelection().map((item) => item.id),
+    order: reportOrder.value,
+  };
+  Object.entries(reportOptionInputs).forEach(([key, input]) => { payload[key] = input.checked; });
+  return payload;
+}
+
+async function buildReport(button) {
+  const payload = reportPayload();
+  if (payload.date_from && payload.date_to && payload.date_from > payload.date_to) {
+    throw new Error('The start date must be on or before the end date.');
+  }
+  const key = JSON.stringify(payload);
+  if (lastReport && lastReport.key === key) return lastReport;
+
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Building...';
+  try {
+    // A plain link can't send the Bearer token, so fetch the file as a blob.
+    const response = await fetch(`${API_BASE}/reports/pdf`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getToken()}` },
+      body: key,
+    });
+    if (response.status === 401) {
+      logout();
+      throw new Error('Your session has expired. Please sign in again.');
+    }
+    if (!response.ok) {
+      const text = await response.text();
+      let message = text;
+      try {
+        const { detail } = JSON.parse(text);
+        if (typeof detail === 'string') message = detail;
+        else if (Array.isArray(detail) && detail[0]?.msg) message = detail[0].msg.replace(/^Value error, /, '');
+      } catch {
+        // Not JSON; show the raw text.
+      }
+      throw new Error(message || 'Request failed');
+    }
+    const disposition = response.headers.get('content-disposition') || '';
+    const filename = /filename="?([^";]+)"?/.exec(disposition)?.[1] || 'defence-news-report.pdf';
+    if (lastReport) URL.revokeObjectURL(lastReport.url);
+    lastReport = { key, filename, url: URL.createObjectURL(await response.blob()) };
+    return lastReport;
+  } finally {
+    button.textContent = label;
+    renderReportList();
+  }
+}
+
+async function previewReport() {
+  try {
+    const report = await buildReport(previewReportBtn);
+    reportPreviewFrame.src = report.url;
+    reportPreviewFrame.classList.remove('hidden');
+    reportPreviewEmpty.classList.add('hidden');
+    reportPreviewLink.href = report.url;
+    reportPreviewLink.classList.remove('hidden');
+  } catch (error) {
+    alert(`Unable to preview the report: ${error.message}`);
+  }
+}
+
+async function downloadReport() {
+  try {
+    const report = await buildReport(downloadReportBtn);
+    const link = document.createElement('a');
+    link.href = report.url;
+    link.download = report.filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  } catch (error) {
+    alert(`Unable to download the report: ${error.message}`);
+  }
+}
+
+restoreSelection();
+renderSelectionBar();
+selectAllBtn.addEventListener('click', selectAllFiltered);
+deselectAllBtn.addEventListener('click', deselectAllFiltered);
+openReportBtn.addEventListener('click', openReportBuilder);
+document.getElementById('closeReportBtn').addEventListener('click', closeReportBuilder);
+reportModal.addEventListener('click', (event) => {
+  if (event.target.dataset.closeReport === 'true') closeReportBuilder();
+});
+reportModal.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') closeReportBuilder();
+});
+document.getElementById('clearSelectionBtn').addEventListener('click', () => {
+  if (!reportSelection.size || !confirm('Remove all articles from this report?')) return;
+  reportSelection.clear();
+  saveSelection();
+  renderReportList();
+});
+reportArticleList.addEventListener('click', (event) => {
+  const row = event.target.closest('[data-report-id]');
+  if (!row) return;
+  const id = Number(row.dataset.reportId);
+  const move = event.target.closest('[data-move]');
+  if (move) {
+    moveReportItem(id, Number(move.dataset.move));
+  } else if (event.target.closest('[data-remove]')) {
+    reportSelection.delete(id);
+    saveSelection();
+    renderReportList();
+  }
+});
+reportOrder.addEventListener('change', renderReportList);
+[reportDateFrom, reportDateTo].forEach((input) => input.addEventListener('input', () => {
+  input.dataset.edited = 'true';
+}));
+// A filter change re-links the report dates to the filter.
+[dateFromFilter, dateToFilter].forEach((input) => input.addEventListener('change', () => {
+  delete reportDateFrom.dataset.edited;
+  delete reportDateTo.dataset.edited;
+}));
+previewReportBtn.addEventListener('click', previewReport);
+downloadReportBtn.addEventListener('click', downloadReport);
 
 function resetSourceForm() {
   sourceForm.reset();
@@ -1372,6 +1740,15 @@ categoryFilter.addEventListener('change', () => loadArticles());
 countryFilter.addEventListener('change', () => loadArticles());
 regionFilter.addEventListener('change', () => loadArticles());
 sourceFilter.addEventListener('change', () => loadArticles());
+// Each date picker can't cross the other, so the range is always valid.
+function syncDateLimits() {
+  dateToFilter.min = dateFromFilter.value;
+  dateFromFilter.max = dateToFilter.value;
+}
+[dateFromFilter, dateToFilter].forEach((input) => input.addEventListener('change', () => {
+  syncDateLimits();
+  loadArticles();
+}));
 closeModalBtn.addEventListener('click', closeArticleDetail);
 articleDetailModal.addEventListener('click', (event) => {
   if (event.target.dataset.closeModal === 'true') {
@@ -1653,16 +2030,34 @@ leadGrid.addEventListener('keydown', (event) => {
 });
 
 articleResults.addEventListener('click', (event) => {
+  // The selection checkbox sits on the card; ticking it must not open the story.
+  if (event.target.closest('.select-box')) return;
   const card = event.target.closest('[data-open-article]');
   if (card) openArticleDetail(Number(card.dataset.openArticle));
 });
 articleResults.addEventListener('keydown', (event) => {
   if (event.key !== 'Enter' && event.key !== ' ') return;
+  // Space on the checkbox ticks it; it shouldn't also open the story.
+  if (event.target.closest('.select-box')) return;
   const card = event.target.closest('[data-open-article]');
   if (card) {
     event.preventDefault();
     openArticleDetail(Number(card.dataset.openArticle));
   }
+});
+articleResults.addEventListener('change', (event) => {
+  const checkbox = event.target.closest('[data-select-article]');
+  if (!checkbox) return;
+  const id = Number(checkbox.dataset.selectArticle);
+  const article = state.pageItems.find((item) => item.id === id);
+  if (checkbox.checked && article) {
+    reportSelection.set(id, selectionEntry(article));
+  } else {
+    reportSelection.delete(id);
+  }
+  checkbox.closest('.article-card')?.classList.toggle('selected', checkbox.checked);
+  saveSelection();
+  renderSelectionBar();
 });
 
 themeToggleBtn.addEventListener('click', () => {

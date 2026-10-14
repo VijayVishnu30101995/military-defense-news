@@ -9,6 +9,7 @@ from urllib.error import URLError
 from urllib.parse import urlparse
 from urllib.request import Request
 from xml.sax.saxutils import escape
+from zoneinfo import ZoneInfo
 
 from PIL import Image as PILImage
 from reportlab.lib import colors
@@ -16,6 +17,7 @@ from reportlab.lib.enums import TA_LEFT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
+from reportlab.lib.utils import simpleSplit
 from reportlab.pdfgen import canvas as pdf_canvas
 from reportlab.platypus import (
     CondPageBreak,
@@ -71,6 +73,8 @@ class PdfArticle:
     published_at: datetime | None = None
     url: str | None = None
     image_url: str | None = None
+    # Set when the photo comes from another outlet's report of the same story.
+    image_credit: str | None = None
 
 
 @dataclass
@@ -240,6 +244,9 @@ def _draw_spaced(canvas, x: float, y: float, text: str, font: str, size: float, 
 class _NumberedCanvas(pdf_canvas.Canvas):
     """Defers page numbering until the total page count is known."""
 
+    # The brief's cover page carries no number.
+    first_numbered_page = 2
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._page_states: list[dict] = []
@@ -252,7 +259,7 @@ class _NumberedCanvas(pdf_canvas.Canvas):
         total = len(self._page_states)
         for state in self._page_states:
             self.__dict__.update(state)
-            if self._pageNumber > 1:
+            if self._pageNumber >= self.first_numbered_page:
                 self.setFont("Helvetica", 8)
                 self.setFillColor(MUTED)
                 self.drawRightString(PAGE_WIDTH - PAGE_MARGIN, 8.5 * mm, f"Page {self._pageNumber} of {total}")
@@ -707,5 +714,314 @@ def build_newsletter_pdf(newsletter: PdfNewsletter) -> bytes:
         onFirstPage=lambda canvas, doc: _draw_cover(canvas, doc, newsletter),
         onLaterPages=lambda canvas, doc: _draw_page(canvas, doc, newsletter),
         canvasmaker=_NumberedCanvas,
+    )
+    return buffer.getvalue()
+
+
+# ----------------------------------------------------------------------- report
+#
+# A custom report covers articles a reader picked, so unlike the daily brief it has no
+# lead story or full text: each article is a compact block, and the reader chooses which
+# details appear.
+
+
+@dataclass
+class PdfReportOptions:
+    include_summary: bool = True
+    include_dates: bool = True
+    include_sources: bool = True
+    include_images: bool = True
+    include_links: bool = True
+
+
+@dataclass
+class PdfReport:
+    title: str
+    date_from: date | None
+    date_to: date | None
+    generated_at: datetime
+    articles: list[PdfArticle]
+    options: PdfReportOptions = field(default_factory=PdfReportOptions)
+    # Dates are printed in the newsroom's timezone, the same one the date filter uses.
+    timezone_name: str = "UTC"
+
+
+REPORT_BAND_HEIGHT = 56 * mm
+REPORT_IMAGE_ASPECT = 16 / 10
+REPORT_IMAGE_WIDTH = CONTENT_WIDTH * 0.36
+# Each article block is kept on one page, so its summary has to be bounded.
+REPORT_SUMMARY_CHARS = 650
+REPORT_TAGLINE = "DEFENCE NEWS REPORT"
+
+
+class _ReportCanvas(_NumberedCanvas):
+    first_numbered_page = 1
+
+
+def _format_local_datetime(value: datetime | None, report: PdfReport) -> str:
+    if value is None:
+        return ""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    local = value.astimezone(ZoneInfo(report.timezone_name))
+    return f"{_format_date(local)}, {local:%H:%M} {local.tzname()}"
+
+
+def _date_range_label(report: PdfReport) -> str:
+    start, end = report.date_from, report.date_to
+    if start and end:
+        return _format_date(start) if start == end else f"{_format_date(start)} – {_format_date(end)}"
+    if start:
+        return f"From {_format_date(start)}"
+    if end:
+        return f"Up to {_format_date(end)}"
+    return "All dates"
+
+
+def _draw_report_footer(canvas, report: PdfReport) -> None:
+    canvas.setStrokeColor(RULE)
+    canvas.setLineWidth(0.5)
+    canvas.line(PAGE_MARGIN, 13 * mm, PAGE_WIDTH - PAGE_MARGIN, 13 * mm)
+    canvas.setFillColor(MUTED)
+    canvas.setFont("Helvetica-Bold", 7.5)
+    canvas.drawString(PAGE_MARGIN, 8.5 * mm, BRAND)
+    canvas.setFont("Helvetica", 7.5)
+    canvas.drawString(
+        PAGE_MARGIN + canvas.stringWidth(BRAND, "Helvetica-Bold", 7.5) + 6,
+        8.5 * mm,
+        _plain(f"Generated {_format_local_datetime(report.generated_at, report)}  |  {_date_range_label(report)}"),
+    )
+
+
+def _draw_report_cover(canvas, doc, report: PdfReport) -> None:
+    canvas.saveState()
+    top = PAGE_HEIGHT
+    canvas.setFillColor(BAND)
+    canvas.rect(0, top - REPORT_BAND_HEIGHT, PAGE_WIDTH, REPORT_BAND_HEIGHT, stroke=0, fill=1)
+    canvas.setFillColor(ACCENT)
+    canvas.rect(0, top - REPORT_BAND_HEIGHT, PAGE_WIDTH, 1.6 * mm, stroke=0, fill=1)
+
+    emblem_size = 15 * mm
+    _draw_emblem(canvas, PAGE_MARGIN, top - 10 * mm - emblem_size, emblem_size)
+    text_x = PAGE_MARGIN + emblem_size * 0.82 + 5 * mm
+    canvas.setFillColor(colors.white)
+    _draw_spaced(canvas, text_x, top - 17 * mm, BRAND, "Helvetica-Bold", 15, 1.4)
+    canvas.setFillColor(ACCENT)
+    _draw_spaced(canvas, text_x, top - 22.5 * mm, REPORT_TAGLINE, "Helvetica-Bold", 7.5, 1.6)
+
+    lines = simpleSplit(_plain(report.title), "Helvetica-Bold", 20, CONTENT_WIDTH)
+    if len(lines) > 2:
+        lines = [lines[0], lines[1].rstrip(" .,;:") + "..."]
+    canvas.setFillColor(colors.white)
+    canvas.setFont("Helvetica-Bold", 20)
+    for index, line in enumerate(lines):
+        canvas.drawString(PAGE_MARGIN, top - (35 + 7.5 * index) * mm, line)
+
+    canvas.setFillColor(BAND_MUTED)
+    _draw_spaced(
+        canvas, PAGE_MARGIN, top - 51 * mm, _plain(f"COVERAGE: {_date_range_label(report).upper()}"),
+        "Helvetica-Bold", 7.5, 1.1,
+    )
+    _draw_spaced(
+        canvas, PAGE_WIDTH - PAGE_MARGIN, top - 51 * mm,
+        _plain(f"GENERATED {_format_local_datetime(report.generated_at, report).upper()}"),
+        "Helvetica", 7.5, 1.1, align="right",
+    )
+
+    _draw_report_footer(canvas, report)
+    canvas.restoreState()
+
+
+def _draw_report_page(canvas, doc, report: PdfReport) -> None:
+    canvas.saveState()
+    top = PAGE_HEIGHT
+    canvas.setFillColor(BAND)
+    canvas.rect(0, top - HEADER_HEIGHT, PAGE_WIDTH, HEADER_HEIGHT, stroke=0, fill=1)
+    canvas.setFillColor(ACCENT)
+    canvas.rect(0, top - HEADER_HEIGHT, PAGE_WIDTH, 0.8 * mm, stroke=0, fill=1)
+
+    _draw_emblem(canvas, PAGE_MARGIN, top - 9.6 * mm, 7 * mm)
+    canvas.setFillColor(colors.white)
+    _draw_spaced(canvas, PAGE_MARGIN + 8.5 * mm, top - 7.6 * mm, BRAND, "Helvetica-Bold", 9, 1.2)
+
+    title = _plain(report.title)
+    if len(title) > 60:
+        title = title[:57].rstrip() + "..."
+    canvas.setFillColor(BAND_MUTED)
+    _draw_spaced(
+        canvas, PAGE_WIDTH - PAGE_MARGIN, top - 7.6 * mm,
+        f"{title.upper()}  |  {_plain(_date_range_label(report)).upper()}",
+        "Helvetica", 7, 0.8, align="right",
+    )
+
+    _draw_report_footer(canvas, report)
+    canvas.restoreState()
+
+
+def _report_styles() -> dict[str, ParagraphStyle]:
+    styles = _styles()
+    styles["report_headline"] = ParagraphStyle(
+        # Named "headline" so _BriefDocTemplate adds it to the contents and PDF outline.
+        "headline", parent=styles["headline"], fontSize=14, leading=17.5, spaceAfter=3,
+    )
+    styles["report_summary"] = ParagraphStyle(
+        "report_summary", parent=styles["body"], fontSize=10, leading=14.2, spaceAfter=5,
+    )
+    styles["report_link"] = ParagraphStyle(
+        "report_link", parent=styles["source"], fontSize=8, leading=11, spaceBefore=1,
+    )
+    return styles
+
+
+def _report_link(article: PdfArticle) -> str:
+    host = _host(article.url)
+    # Google News redirect links are long and say nothing about the publisher.
+    if host.endswith("news.google.com"):
+        label = f"Read the original report{f' at {_para(article.source_name)}' if article.source_name else ''}"
+    elif len(article.url or "") <= 95:
+        label = _para(article.url)
+    else:
+        label = _para(host)
+    return f"Original article: {_link(article.url, label)}"
+
+
+def _report_article(
+    article: PdfArticle,
+    image_data: bytes | None,
+    report: PdfReport,
+    styles: dict[str, ParagraphStyle],
+) -> list:
+    options = report.options
+    kicker_bits = [f"{article.position:02d}"]
+    if article.categories:
+        kicker_bits.append(" / ".join(article.categories[:3]).upper())
+
+    headline = Paragraph(_para(article.title), styles["report_headline"])
+    headline._bookmark = f"article-{article.position}"
+    headline._position = article.position
+    block: list = [Paragraph(escape("  |  ".join(kicker_bits)), styles["kicker"]), headline]
+
+    meta = []
+    if options.include_sources and article.source_name:
+        meta.append(_para(article.source_name))
+    if options.include_dates and article.published_at:
+        meta.append(_para(_format_local_datetime(article.published_at, report)))
+    if meta:
+        block.append(Paragraph("  &middot;  ".join(meta), styles["byline"]))
+    block.append(Spacer(1, 5))
+
+    text: list = []
+    summary = _plain(article.summary) if options.include_summary else ""
+    # Google News "summaries" are just the headline and the publisher's name.
+    if summary.casefold().startswith(_plain(article.title).casefold()) and len(summary) - len(_plain(article.title)) < 40:
+        summary = ""
+    if len(summary) > REPORT_SUMMARY_CHARS:
+        summary = summary[: REPORT_SUMMARY_CHARS - 3].rsplit(" ", 1)[0] + "..."
+    if summary:
+        text.append(Paragraph(escape(summary), styles["report_summary"]))
+    if options.include_links and article.url:
+        text.append(Paragraph(_report_link(article), styles["report_link"]))
+
+    if image_data:
+        credit = article.image_credit or article.source_name
+        image_cell = [
+            Image(BytesIO(image_data), width=REPORT_IMAGE_WIDTH, height=REPORT_IMAGE_WIDTH / REPORT_IMAGE_ASPECT),
+            Paragraph(_para(f"Photo: {credit}" if credit else "Photo courtesy of the publisher"), styles["credit"]),
+        ]
+        row = Table([[image_cell, text]], colWidths=[REPORT_IMAGE_WIDTH, CONTENT_WIDTH - REPORT_IMAGE_WIDTH])
+        row.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (0, 0), 0),
+            ("LEFTPADDING", (1, 0), (1, 0), 11),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ]))
+        block.append(row)
+    else:
+        block += text
+
+    block.append(HRFlowable(width="100%", thickness=0.5, color=RULE, spaceBefore=8, spaceAfter=10))
+    return [CondPageBreak(45 * mm), KeepTogether(block)]
+
+
+def _prefetch_report_images(report: PdfReport) -> dict[int, bytes | None]:
+    if not report.options.include_images:
+        return {}
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = {
+            article.position: pool.submit(_fetch_image, article.image_url, REPORT_IMAGE_ASPECT)
+            for article in report.articles
+            if article.image_url
+        }
+        return {position: future.result() for position, future in futures.items()}
+
+
+def build_report_pdf(report: PdfReport) -> bytes:
+    styles = _report_styles()
+    images = _prefetch_report_images(report)
+
+    sources = {article.source_name for article in report.articles if article.source_name}
+    categories = {category for article in report.articles for category in article.categories}
+
+    def stat(value: int, label: str) -> list:
+        return [Paragraph(str(value), styles["stat_value"]), Paragraph(label, styles["stat_label"])]
+
+    stats = Table(
+        [[
+            stat(len(report.articles), "ARTICLES IN THIS REPORT"),
+            stat(len(sources), "SOURCES CITED"),
+            stat(len(categories), "CATEGORIES COVERED"),
+        ]],
+        colWidths=[CONTENT_WIDTH / 3] * 3,
+    )
+    stats.setStyle(TableStyle([
+        ("LINEABOVE", (0, 0), (-1, 0), 1.2, INK),
+        ("LINEBELOW", (0, 0), (-1, 0), 0.5, RULE),
+        ("LINEAFTER", (0, 0), (-2, 0), 0.5, RULE),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 9),
+    ]))
+
+    story: list = [Spacer(1, REPORT_BAND_HEIGHT - TOP_MARGIN + 7 * mm), stats, Spacer(1, 7 * mm)]
+    if len(report.articles) > 1:
+        toc = TableOfContents()
+        toc.levelStyles = [styles["toc"]]
+        toc.dotsMinLevel = 0
+        story += [Paragraph("CONTENTS", styles["section"]), toc, Spacer(1, 8 * mm)]
+    story.append(Paragraph("ARTICLES", styles["section"]))
+    story.append(HRFlowable(width="100%", thickness=1.2, color=INK, spaceAfter=10))
+    for article in report.articles:
+        story += _report_article(article, images.get(article.position), report, styles)
+
+    story.append(
+        Paragraph(
+            "This report is compiled from open-source reporting by the publications credited above. "
+            "Article text and images remain the copyright of their respective publishers"
+            + ("; follow the links for the original reports." if report.options.include_links else "."),
+            styles["disclaimer"],
+        )
+    )
+
+    buffer = BytesIO()
+    document = _BriefDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=PAGE_MARGIN,
+        rightMargin=PAGE_MARGIN,
+        topMargin=TOP_MARGIN,
+        bottomMargin=BOTTOM_MARGIN,
+        title=_plain(report.title),
+        author="Defense Brief",
+        subject="Defence news report",
+        creator="Defense Brief",
+    )
+    document.multiBuild(
+        story,
+        onFirstPage=lambda canvas, doc: _draw_report_cover(canvas, doc, report),
+        onLaterPages=lambda canvas, doc: _draw_report_page(canvas, doc, report),
+        canvasmaker=_ReportCanvas,
     )
     return buffer.getvalue()

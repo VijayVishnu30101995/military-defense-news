@@ -82,6 +82,12 @@ class Article(Base):
         nullable=True,
     )
 
+    # When the story's page was read for text it lacked, so each story is tried once.
+    text_lookup_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
     language: Mapped[str] = mapped_column(
         String(10),
         nullable=False,

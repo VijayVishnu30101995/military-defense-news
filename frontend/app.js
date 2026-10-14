@@ -713,6 +713,15 @@ function articleText(article) {
   return { standfirst: summary, paragraphs };
 }
 
+// Why a story has no text to show: video and live pages have none; other publishers
+// keep their full report on their own site.
+function missingTextNote(url, sourceName) {
+  const site = hostOf(url) || 'the publisher\'s site';
+  if (/\/videos?\//i.test(url || '')) return `This is a video report. Watch it on ${site}.`;
+  if (/\/(live|liveblog)\//i.test(url || '')) return `This is a live page that ${sourceName} keeps updating. Follow it on ${site}.`;
+  return `${sourceName} shares only a summary of this story. The complete report is available on ${site}.`;
+}
+
 function hostOf(url) {
   try {
     return new URL(url).hostname.replace(/^www\./, '');
@@ -783,7 +792,7 @@ function openArticleDetail(articleId) {
             ? `<div class="article-body-text">${paragraphs.map((p) => `<p>${escapeHtml(p)}</p>`).join('')}</div>`
             : `<div class="article-detail-section">
                 <h4>Full report</h4>
-                <p>${escapeHtml(sourceName)} shares only a summary of this story in its feed. The complete report is available on ${escapeHtml(hostOf(article.original_url) || 'the publisher\'s site')}.</p>
+                <p>${escapeHtml(missingTextNote(article.original_url, sourceName))}</p>
               </div>`}
           ${keyPoints.length ? `
             <div class="article-detail-section">

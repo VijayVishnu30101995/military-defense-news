@@ -17,6 +17,7 @@ const leadGrid = document.getElementById('leadGrid');
 const newsletterPanel = document.getElementById('newsletterPanel');
 const generateBriefBtn = document.getElementById('generateBriefBtn');
 const searchInput = document.getElementById('searchInput');
+const articleFilterForm = document.getElementById('articleFilterForm');
 const categoryFilter = document.getElementById('categoryFilter');
 const categoryChips = document.getElementById('categoryChips');
 const countryFilter = document.getElementById('countryFilter');
@@ -186,7 +187,14 @@ async function api(path, options = {}) {
     if (response.status === 401 && token && getToken() === token) {
       logout();
     }
-    throw new Error(errorText || 'Request failed');
+    let message = errorText;
+    try {
+      const { detail } = JSON.parse(errorText);
+      if (typeof detail === 'string') message = detail;
+    } catch {
+      // Not JSON; show the raw text.
+    }
+    throw new Error(message || 'Request failed');
   }
 
   const contentType = response.headers.get('content-type') || '';
@@ -1086,14 +1094,12 @@ async function submitSource(event) {
     reliability_score: Number(sourceReliability.value || 85),
     collection_frequency: Number(sourceFrequency.value || 360),
     is_active: sourceActive.value === 'true',
-    country_id: null,
-    region_id: null,
-    language: 'en',
   };
 
   try {
     const sourceId = sourceForm.dataset.editingSourceId;
     if (sourceId) {
+      // The form has no country, region or language fields, so an edit leaves them as they are.
       await api(`/sources/${sourceId}`, {
         method: 'PATCH',
         body: JSON.stringify(payload),
@@ -1101,7 +1107,7 @@ async function submitSource(event) {
     } else {
       await api('/sources', {
         method: 'POST',
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ ...payload, country_id: null, region_id: null, language: 'en' }),
       });
     }
 
@@ -1355,6 +1361,12 @@ let searchDebounceTimer = null;
 searchInput.addEventListener('input', () => {
   clearTimeout(searchDebounceTimer);
   searchDebounceTimer = setTimeout(() => loadArticles(), 300);
+});
+// Enter in the search box submits the form; search in place instead of reloading the page.
+articleFilterForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  clearTimeout(searchDebounceTimer);
+  loadArticles();
 });
 categoryFilter.addEventListener('change', () => loadArticles());
 countryFilter.addEventListener('change', () => loadArticles());

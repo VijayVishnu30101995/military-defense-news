@@ -109,8 +109,23 @@ def test_aircraft_designator_pattern_ignores_civilian_strings() -> None:
     for title in [
         "COVID-19 cases rise across Europe",
         "Apple reports Q-3 earnings beat",
+        "Tech firms lobby to expand H-1B visa cap",
+        "India U-19 squad named for Asia Cup",
+        "Startup files S-1 for IPO",
+        "F-1 student visa rules tightened",
+        "Vitamin B-12 shortage hits pharmacies",
     ]:
         assert is_off_topic_story(title), title
+
+
+def test_designator_exclusions_keep_real_aircraft() -> None:
+    for title in ["U-2 spy plane flies over Korea", "B-21 bomber test flight", "F-16 sale approved"]:
+        assert is_defense_story(title), title
+
+
+def test_think_tank_neither_counts_as_tank_nor_penalises() -> None:
+    assert is_defense_story("Think tank warns of Chinese navy buildup in Pacific")
+    assert score_defense_relevance("Think tank hosts annual gala") == 0
 
 
 def test_headline_outweighs_summary() -> None:

@@ -32,6 +32,17 @@ through `localhost:5434`.
    uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
    ```
 
+4. To run the tests, install the dev dependencies and run pytest from `backend`:
+
+   ```sh
+   pip install -r backend/requirements-dev.txt
+   cd backend
+   pytest
+   ```
+
+   Several tests create and then delete rows in the database `DATABASE_URL`
+   points at, so run them against your local database, never a deployed one.
+
 The API reads `DATABASE_URL` from the root `.env` file. The example credentials
 in `docker-compose.yml` are for local development only; use managed secrets and
 credentials for deployments.

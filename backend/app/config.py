@@ -1,9 +1,11 @@
 from pathlib import Path
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
+DEFAULT_SECRET_KEY = "development-secret-key-change-me"
 
 
 class Settings(BaseSettings):
@@ -12,7 +14,7 @@ class Settings(BaseSettings):
     app_url: str = "http://localhost:8001"
 
     database_url: str = "sqlite:///./app.db"
-    secret_key: str = "development-secret-key-change-me"
+    secret_key: str = DEFAULT_SECRET_KEY
 
     admin_email: str = "admin@defensebrief.com"
     admin_password: str | None = None
@@ -40,6 +42,13 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @model_validator(mode="after")
+    def _require_real_secret_outside_development(self) -> "Settings":
+        # The default key is public in this repo, so anyone could forge admin tokens with it.
+        if self.app_env != "development" and self.secret_key in ("", DEFAULT_SECRET_KEY):
+            raise ValueError("SECRET_KEY must be set when APP_ENV is not 'development'")
+        return self
 
 
 settings = Settings()

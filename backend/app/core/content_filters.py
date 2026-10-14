@@ -52,7 +52,10 @@ _CORE_TERMS = re.compile(
     r"projectiles?|"
     r"air defen[cs]e|missile defen[cs]e|anti-?aircraft|"
     # Military aircraft and UAV designators: F-35, B-21, P-8, MQ-9, YFQ-48, MH-139, KC-46.
-    # The prefix list is explicit so civilian strings like "COVID-19" cannot match.
+    # The prefix list is explicit so civilian strings like "COVID-19" cannot match, and the
+    # lookahead drops codes that collide with everyday ones: H-1B/H-2A visas, F-1 student
+    # visas, S-1 filings, A-1, vitamin B-12, T-20 cricket, and U-17/U-19 age groups (U-2 stays).
+    r"(?!(?:h-[12][ab]|f-1|s-1|a-1|b-12|t-[12]0|u-(?!2[a-z]?\b)\d+[a-z]?)\b)"
     r"(?:f/a|fa|f|a|b|c|e|p|t|u|v|x|s|h|ah|ch|mh|uh|oh|kc|ec|rc|mq|rq|yfq|cq|sr|ea|av|cv|mv)-\d{1,3}[a-z]?|"
     r"su-?(?:24|25|27|30|34|35|57)|mig-?\d{1,2}|j-?(?:10|16|20|31|35)|"
     r"gripen|rafale|eurofighter|tejas|awacs|"
@@ -111,7 +114,7 @@ _PENALTY_TERMS = re.compile(
     r"\b(?:"
     r"defen[cs]e (?:attorney|lawyer|counsel|team|rests)|"
     r"trade war|price war|culture war|bidding war|turf war|war of words|"
-    r"star wars|war correspondent|think tanks?|"
+    r"star wars|war correspondent|"
     r"head coach|goalkeeper|striker|midfielder|quarterback|"
     r"movie|film|box office|netflix|album|fashion|"
     r"stock market|share price|quarterly earnings|"
@@ -122,6 +125,11 @@ _PENALTY_TERMS = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+
+# Phrases whose defense-sounding word means nothing here. They are removed before
+# scoring rather than penalised: "think tank" shouldn't count as a tank, but a think
+# tank's report on the navy is still a navy story.
+_NEUTRAL_PHRASES = re.compile(r"\bthink[- ]tanks?\b", re.IGNORECASE)
 
 _CORE_WEIGHT = 30
 _SUPPORTING_WEIGHT = 12
@@ -148,6 +156,7 @@ def score_defense_relevance(
         return 0
 
     def tally(text: str) -> int:
+        text = _NEUTRAL_PHRASES.sub(" ", text)
         return (
             len(_CORE_TERMS.findall(text)) * _CORE_WEIGHT
             + len(_SUPPORTING_TERMS.findall(text)) * _SUPPORTING_WEIGHT

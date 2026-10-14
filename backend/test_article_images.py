@@ -241,3 +241,9 @@ def test_publisher_that_refuses_pages_is_skipped_for_the_rest_of_the_run(monkeyp
         assert service._fetch_article_html(GOOGLE_NEWS_LINK, "https://www.reuters.com") is None
 
     assert len(decodes) == 1
+
+
+def test_image_urls_from_page_metadata_are_html_decoded() -> None:
+    html = '<meta property="og:image" content="https://cdn.example.com/a.jpg?width=1200&amp;auth=abc">'
+
+    assert SourceCollectorService._extract_image_from_html(html) == "https://cdn.example.com/a.jpg?width=1200&auth=abc"

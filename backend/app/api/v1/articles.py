@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import func, or_
@@ -115,23 +116,37 @@ def _serialize_articles(db: Session, articles: list[Article]) -> list[dict]:
 
 @router.get("/dashboard")
 def get_dashboard(db: Session = Depends(get_db)) -> dict:
-    articles = (
-        db.query(Article)
-        .filter(_visible_filter())
-        .order_by(Article.published_at.desc().nullslast(), Article.collected_at.desc())
-        .all()
-    )
-    articles = [article for article in articles if _is_visible(article)]
-    total_news = len(articles)
-    important_news = sum(
-        article.importance_score is not None and article.importance_score >= 80
-        for article in articles
+    # Counts come from SQL for scored rows; only the legacy unscored rows need the keyword
+    # pass, so just their text columns are loaded.
+    scored = db.query(Article).filter(Article.relevance_score >= settings.relevance_threshold)
+    legacy = [
+        row.importance_score
+        for row in db.query(
+            Article.title, Article.summary, Article.description, Article.importance_score
+        ).filter(Article.relevance_score.is_(None))
+        if not is_off_topic_story(row.title, row.summary or row.description)
+    ]
+    total_news = scored.count() + len(legacy)
+    important_news = scored.filter(Article.importance_score >= 80).count() + sum(
+        score is not None and score >= 80 for score in legacy
     )
     category_count = db.query(Category.id).count()
     source_count = db.query(Source.id).count()
 
-    top_developments = sorted(articles, key=_rank_key, reverse=True)[:4]
-    latest_news = articles[:6]
+    def first_visible(order_by, limit: int) -> list[Article]:
+        # Over-fetch so legacy rows dropped by the keyword filter don't leave the list short.
+        rows = db.query(Article).filter(_visible_filter()).order_by(*order_by).limit(limit * 5).all()
+        return [article for article in rows if _is_visible(article)][:limit]
+
+    top_developments = first_visible(
+        (  # SQL form of _rank_key
+            func.coalesce(Article.relevance_score, 0).desc(),
+            func.coalesce(Article.importance_score, 0).desc(),
+            func.coalesce(Article.published_at, Article.collected_at).desc(),
+        ),
+        4,
+    )
+    latest_news = first_visible((Article.published_at.desc().nullslast(), Article.collected_at.desc()), 6)
 
     latest_newsletter = db.query(Newsletter).order_by(Newsletter.newsletter_date.desc()).first()
     newsletter_payload = {"available": False}
@@ -367,16 +382,28 @@ def get_newsletter(newsletter_id: int, db: Session = Depends(get_db)) -> dict:
 
 @router.post("/newsletters/generate", dependencies=[Depends(require_admin)])
 def generate_newsletter(db: Session = Depends(get_db)) -> dict:
-    newsletter_date = date.today()
+    # The brief is dated in the newsroom's timezone; the server itself runs on UTC.
+    newsletter_date = datetime.now(ZoneInfo(settings.news_timezone)).date()
     newsletter = db.query(Newsletter).filter(Newsletter.newsletter_date == newsletter_date).first()
-    if newsletter is None:
+    # An existing brief with no stories (e.g. generated before any collection ran) is
+    # refilled rather than kept, so it doesn't block the day's real brief.
+    is_empty = newsletter is not None and not db.query(
+        db.query(NewsletterArticle.article_id).filter(NewsletterArticle.newsletter_id == newsletter.id).exists()
+    ).scalar()
+    if newsletter is None or is_empty:
         article_candidates = (
             db.query(Article)
             .filter(_visible_filter())
             .order_by(Article.published_at.desc().nullslast(), Article.collected_at.desc())
+            .limit(200)
             .all()
         )
         recent = [article for article in article_candidates if _is_visible(article)][:40]
+        if not recent:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="No stories to include yet. Collect the latest news first.",
+            )
         # Strongest defense stories first, then full-text publishers ahead of summary-only
         # ones; sorted() is stable, so each pass preserves the order of the one before.
         ranked = sorted(recent, key=_rank_key, reverse=True)
@@ -393,14 +420,15 @@ def generate_newsletter(db: Session = Depends(get_db)) -> dict:
         if len(article_candidates) < 5:
             article_candidates += [article for article in ranked if article not in article_candidates][: 5 - len(article_candidates)]
 
-        newsletter = Newsletter(
-            newsletter_date=newsletter_date,
-            title=f"Defense Brief - {newsletter_date.isoformat()}",
-            intro="Today's defense briefing highlights the key developments across the monitored theaters.",
-            status="draft",
-            generated_at=datetime.now(timezone.utc),
-        )
-        db.add(newsletter)
+        if newsletter is None:
+            newsletter = Newsletter(
+                newsletter_date=newsletter_date,
+                title=f"Defense Brief - {newsletter_date.isoformat()}",
+                intro="Today's defense briefing highlights the key developments across the monitored theaters.",
+                status="draft",
+            )
+            db.add(newsletter)
+        newsletter.generated_at = datetime.now(timezone.utc)
         db.flush()
 
         for position, article in enumerate(article_candidates):

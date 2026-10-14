@@ -9,6 +9,9 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Keeps an unreachable mail server from stalling the collection or health check that sent the alert.
+SMTP_TIMEOUT_SECONDS = 15
+
 
 class SourceAlertService:
     @staticmethod
@@ -62,13 +65,13 @@ class SourceAlertService:
             msg.set_content(message)
 
             if use_tls:
-                with smtplib.SMTP(host, port) as server:
+                with smtplib.SMTP(host, port, timeout=SMTP_TIMEOUT_SECONDS) as server:
                     server.starttls()
                     if username and password:
                         server.login(username, password)
                     server.send_message(msg)
             else:
-                with smtplib.SMTP(host, port) as server:
+                with smtplib.SMTP(host, port, timeout=SMTP_TIMEOUT_SECONDS) as server:
                     if username and password:
                         server.login(username, password)
                     server.send_message(msg)
@@ -153,13 +156,13 @@ def notify_health_summary(summaries: list[dict]) -> bool:
         msg.set_content(message)
 
         if use_tls:
-            with smtplib.SMTP(host, port) as server:
+            with smtplib.SMTP(host, port, timeout=SMTP_TIMEOUT_SECONDS) as server:
                 server.starttls()
                 if username and password:
                     server.login(username, password)
                 server.send_message(msg)
         else:
-            with smtplib.SMTP(host, port) as server:
+            with smtplib.SMTP(host, port, timeout=SMTP_TIMEOUT_SECONDS) as server:
                 if username and password:
                     server.login(username, password)
                 server.send_message(msg)
